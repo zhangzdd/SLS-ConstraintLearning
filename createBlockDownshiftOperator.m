@@ -30,12 +30,12 @@ function D = createBlockDownshiftOperator(n_block, N)
 
     for i = 1:(N - 1)
         % Define the row indices for the current output block (i-th block of X_shifted)
-        row_start = (i - 1) * n_block + 1;
-        row_end = i * n_block;
+        row_start = i * n_block + 1;
+        row_end = (i + 1) * n_block;
 
         % Define the column indices for the corresponding input block ((i+1)-th block of X)
-        col_start = i * n_block + 1;
-        col_end = (i + 1) * n_block;
+        col_start = (i - 1) * n_block + 1;
+        col_end = i * n_block;
 
         % Place an identity matrix in the appropriate block position
         D(row_start:row_end, col_start:col_end) = eye(n_block);
