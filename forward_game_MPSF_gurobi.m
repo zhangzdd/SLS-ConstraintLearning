@@ -89,7 +89,7 @@ b_poly = [3;
         3;
         2;  
         2];
-DimAffine = 3;
+DimAffine = 1;
 
 % Nominal trajectory z,v
 z = sdpvar(state_dim*T,1);
@@ -105,7 +105,7 @@ for dim = 1:DimAffine
         z_k_plus_1 = z(k*state_dim+1:(k+1)*state_dim);
         constraints = [constraints, z_k_plus_1 == A_t*z_k + B_t*v_k];
         % constraints = [constraints, A_poly(dim,:)*z_k(1:constrained_states_upper_limited) + norm(A_poly(dim,:)*phi_kx(1:constrained_states_upper_limited,:),1) <= b_poly(dim)];
-        constraints = [constraints, [1 0 0 0]*z_k + norm([1 0 0 0]*phi_kx,1) <= 3];
+        constraints = [constraints, [1 0 0 0]*z_k + disturbance_level * norm([1 0 0 0]*phi_kx,1) <= 3];
         constraints = [constraints, [1 0]*v_k + norm([1 0]*phi_ku,1) <= 75];
         constraints = [constraints, [1 0]*v_k + norm([1 0]*phi_ku,1) >= -75];
         constraints = [constraints, [0 1]*v_k + norm([0 1]*phi_ku,1) <= 75];
@@ -137,38 +137,48 @@ end
 % Solve
 ops = sdpsettings('solver','gurobi','verbose', 2);
 optimization_results = optimize(constraints, objective, ops);
-
+%%
 % Plot nominal trajectory (z)
 figure;hold on;
 unstacked_z = reshape(value(z),[state_dim, T]);
 unstacked_v = reshape(value(v),[input_dim, T]);
-plot(unstacked_z(1,:),unstacked_z(2,:),"b","DisplayName","Nominal");
+plot(unstacked_z(1,:),unstacked_z(2,:),"g","DisplayName","Nominal");
 xlim([0,10]);ylim([0,10]);
 %%
 % Roll out trajectory with noise to the dynamics, WITHOUT the feedback
-x_init = [0;0;0;0];
+x_init = [0;0;0;0]; % same as nominal trajectory initial state
 x = zeros(state_dim,T);
 
 for i = 1:T-1
-    new_x = A_t*x(:,i) + B_t*unstacked_v(:,i) + disturbance_level*randn();
+    noise = randn(4, 1);     % random vector from N(0,1)
+    noise = noise / norm(noise);     % normalize to have norm 1
+    new_x = A_t*x(:,i) + B_t*unstacked_v(:,i) + noise;
     x(:,i+1) = new_x;
 end
-plot(x(1,:),x(2,:),"DisplayName","Disturbed");
+plot(x(1,:),x(2,:),"r","DisplayName","Disturbed");
 %%
 % Roll out trajectory with noise to the dynamics, WITH the feedback
+
+% Suppress the NaNs
+val_u = value(phi_u);
+val_u(isnan(val_u)) = 0;
+
+
+
 K = value(phi_u) / value(phi_x);
 
 x_init = [0;0;0;0];
 x = zeros(state_dim,T);
 
 for i = 1:T-1
-    feedback_control = zeros(state_dim,1);
+    feedback_control = zeros(input_dim,1);
     for j = 1:i
         % Feedback gain exists for all previous timesteps (causal system)
-        feedback_control = feedback_control + B_t*K((i-1)*input_dim+1:i*input_dim,(j-1)*state_dim+1:j*state_dim)*x(:,j);
+        feedback_control = feedback_control + K((i-1)*input_dim+1:i*input_dim,(j-1)*state_dim+1:j*state_dim)*(x(:,j) - unstacked_z(:,j));
     end
-    x(:,i+1) = A_t*x(:,i) + feedback_control + disturbance_level*randn();
+    noise = randn(4, 1);     % random vector from N(0,1)
+    noise = noise / norm(noise);     % normalize to have norm 1
+    x(:,i+1) = A_t*x(:,i) + B_t*(feedback_control + unstacked_v(:,i)) + noise;
 end
-plot(x(1,:),x(2,:),"DisplayName","Disturbed w/ Feedback Control");
-
+plot(x(1,:),x(2,:),"b","DisplayName","Disturbed w/ Feedback Control");
 
