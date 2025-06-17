@@ -86,7 +86,7 @@ A_poly = [1 0 0 0;
          0 1 0 0;
          0 -1 0 0];
 b_poly = [5;
-        3;
+        5;
         2;  
         2];
 DimAffine = 1;
@@ -122,7 +122,7 @@ z_init = z((1-1)*state_dim+1:1*state_dim);
 z_terminal = z((T-1)*state_dim+1:T*state_dim);
 % v_terminal = v((T-1)*input_dim+1:T*input_dim);
 constraints = [constraints, z_init(1:state_dim) == [0;0;0;0]];
-constraints = [constraints, z_terminal(1:state_dim) == [2.9;20;0;0]];
+constraints = [constraints, z_terminal(1:state_dim) == [0.;20;0;0]];
 % constraints = [constraints, v_terminal(1:input_dim) == [0;0]];
 
 
@@ -146,7 +146,9 @@ for k = 1:T-1
     z_k = z((k-1)*state_dim+1:k*state_dim);
     z_k_plus_1 = z(k*state_dim+1:(k+1)*state_dim);
     
-    objective = objective + sum((z_k_plus_1(1:2) - z_k(1:2)).^2);
+    % The objective is two-fold: trying to maximize x-coordinates, and
+    % trying to smooth the overall trajectory
+    objective = objective + sum((z_k_plus_1(1:2) - z_k(1:2)).^2) - z_k(1);
 end
 
 % Solve
@@ -161,10 +163,10 @@ unstacked_v = reshape(value(v),[input_dim, T]);
 xlim([-10,10]);ylim([-10,10]);
 %% Run roll outs at multiple times with noise signal
 num_rollout = 100;
-error_signal_feedback = cell(num_rollout);
-error_signal_openloop = cell(num_rollout);
-state_trajectory_closedloop = cell(num_rollout);
-% input_trajectory_closedloop = cell(num_rollout);
+error_signal_feedback = cell(num_rollout,1);
+error_signal_openloop = cell(num_rollout,1);
+state_trajectory_closedloop = cell(num_rollout,1);
+input_trajectory_closedloop = cell(num_rollout,1);
 
 for rollout_cnt = 1:num_rollout
     % Roll out trajectory with noise to the dynamics, WITHOUT the feedback
@@ -184,17 +186,19 @@ for rollout_cnt = 1:num_rollout
     % Roll out trajectory with noise to the dynamics, WITH the feedback
     
     % Suppress the NaNs
-    val_u = value(phi_u);
-    val_u(isnan(val_u)) = 0;
+    val_phi_u = value(phi_u);
+    val_phi_u(isnan(val_phi_u)) = 0;
+    val_phi_x = value(phi_x);
     
     
+    K = val_phi_u / val_phi_x;
     
-    K = value(phi_u) / value(phi_x);
-    
-    x_init = [0;0;0;0];
+    x_init = disturbance_level * (rand(4,1)*2 - 1);
     x = zeros(state_dim,T);
+    x(:,1) = x_init;
+    feedback_u = zeros(input_dim,T);
     
-    for i = 1:T-1
+    for i = 1:T
         feedback_control = zeros(input_dim,1);
         for j = 1:i
             % Feedback gain exists for all previous timesteps (causal system)
@@ -203,55 +207,61 @@ for rollout_cnt = 1:num_rollout
         % noise = randn(4, 1);     % random vector from N(0,1)
         % noise = noise / norm(noise,1);     % normalize to have norm 1
         noise = disturbance_level * (rand(4,1)*2 - 1);
-        x(:,i+1) = A_t*x(:,i) + B_t*(feedback_control + unstacked_v(:,i)) + noise;
+        if i<=T-1
+            x(:,i+1) = A_t*x(:,i) + B_t*(feedback_control + unstacked_v(:,i)) + noise;
+        end
+        feedback_u(:,i) = feedback_control;
     end
     plot(x(1,1:end),x(2,1:end),"b","DisplayName","Disturbed w/ Feedback Control");
     % plot(x(1,1:end) - unstacked_z(1,1:end),x(2,1:end) - unstacked_z(2,1:end),"b","DisplayName","Error signal w/ Feedback Control")
     error_signal_feedback{rollout_cnt} = [x(1,1:end) - unstacked_z(1,1:end);x(2,1:end) - unstacked_z(2,1:end)];
     state_trajectory_closedloop{rollout_cnt} = x;
+    input_trajectory_closedloop{rollout_cnt} = feedback_u;
 end
 xline(b_poly(1),":",'LineWidth',2);
+save('forward_game_data.mat','state_trajectory_closedloop','input_trajectory_closedloop','unstacked_z','unstacked_v','state_dim','input_dim','DimAffine','T','num_rollout','val_phi_u','val_phi_x','Z','A','B','A_t','B_t', ...
+    'disturbance_level');
 
-%%
-% Compute the maximum error tube
-constraints = []; % Empty the constraints to perform a new optimization
-val_phi_x = value(phi_x);
-w = sdpvar(state_dim*T,1);
-x_tube = zeros(1,T);
-y_tube = zeros(1,T);
-for t = 1:T
-    x_bound = 0;
-    y_bound = 0;
-    for j = 1:t
-        x_bound = x_bound + norm([1 0 0 0] * val_phi_x((t-1)*state_dim+1:t*state_dim,(j-1)*state_dim+1:j*state_dim) * w((j-1)*state_dim+1:j*state_dim),1);
-        y_bound = y_bound + norm([0 1 0 0] * val_phi_x((t-1)*state_dim+1:t*state_dim,(j-1)*state_dim+1:j*state_dim) * w((j-1)*state_dim+1:j*state_dim),1);
-        constraints = [constraints, norm(w((j-1)*state_dim+1:j*state_dim),1) <= 1];
-    end
-    % Try to maximize the bounds
-    optimize(constraints, 10000 - norm(x_bound,1), ops);
-    x_tube(t) = value(x_bound);
-    optimize(constraints, 10000 - norm(y_bound,1), ops);
-    y_tube(t) = value(y_bound);
-end
-%%
-% Plot the tube along with the various rollout trajectories
-figure(2);hold on;
-for t = 1:(T-1)
-    % Upper bound line from x_tube(t) to x_tube(t+1)
-    plot([t, t+1], [x_tube(t), x_tube(t+1)], 'k', 'LineWidth', 2);
-    
-    % Lower bound line from -x_tube(t) to -x_tube(t+1)
-    plot([t, t+1], [-x_tube(t), -x_tube(t+1)], 'k', 'LineWidth', 2);
-end
-
-% Plot rollout trajectories
-for rollout_cnt = 1:num_rollout
-    for t = 1:T
-        x_closed_loop = error_signal_feedback{rollout_cnt}(1,t);
-        x_open_loop   = error_signal_openloop{rollout_cnt}(2,t);
-        scatter(t, x_closed_loop, 10, 'blue');
-        scatter(t, x_open_loop,   10, 'red');
-        
-    end
-end
-xlabel("t");ylabel("x");
+% %%
+% % Compute the maximum error tube
+% constraints = []; % Empty the constraints to perform a new optimization
+% val_phi_x = value(phi_x);
+% w = sdpvar(state_dim*T,1);
+% x_tube = zeros(1,T);
+% y_tube = zeros(1,T);
+% for t = 1:T
+%     x_bound = 0;
+%     y_bound = 0;
+%     for j = 1:t
+%         x_bound = x_bound + norm([1 0 0 0] * val_phi_x((t-1)*state_dim+1:t*state_dim,(j-1)*state_dim+1:j*state_dim) * w((j-1)*state_dim+1:j*state_dim),1);
+%         y_bound = y_bound + norm([0 1 0 0] * val_phi_x((t-1)*state_dim+1:t*state_dim,(j-1)*state_dim+1:j*state_dim) * w((j-1)*state_dim+1:j*state_dim),1);
+%         constraints = [constraints, norm(w((j-1)*state_dim+1:j*state_dim),1) <= 1];
+%     end
+%     % Try to maximize the bounds
+%     optimize(constraints, 10000 - norm(x_bound,1), ops);
+%     x_tube(t) = value(x_bound);
+%     optimize(constraints, 10000 - norm(y_bound,1), ops);
+%     y_tube(t) = value(y_bound);
+% end
+% %% Visualize the tube bound (this section could take a while to run)
+% % Plot the tube along with the various rollout trajectories
+% figure(2);hold on;
+% for t = 1:(T-1)
+%     % Upper bound line from x_tube(t) to x_tube(t+1)
+%     plot([t, t+1], [x_tube(t), x_tube(t+1)], 'k', 'LineWidth', 2);
+% 
+%     % Lower bound line from -x_tube(t) to -x_tube(t+1)
+%     plot([t, t+1], [-x_tube(t), -x_tube(t+1)], 'k', 'LineWidth', 2);
+% end
+% 
+% % Plot rollout trajectories
+% for rollout_cnt = 1:num_rollout
+%     for t = 1:T
+%         x_closed_loop = error_signal_feedback{rollout_cnt}(1,t);
+%         x_open_loop   = error_signal_openloop{rollout_cnt}(2,t);
+%         scatter(t, x_closed_loop, 10, 'blue');
+%         scatter(t, x_open_loop,   10, 'red');
+% 
+%     end
+% end
+% xlabel("t");ylabel("x");
