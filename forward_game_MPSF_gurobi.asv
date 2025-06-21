@@ -221,7 +221,15 @@ end
 xline(b_poly(1),":",'LineWidth',2);
 save('forward_game_data.mat','state_trajectory_closedloop','input_trajectory_closedloop','unstacked_z','unstacked_v','state_dim','input_dim','DimAffine','T','num_rollout','val_phi_u','val_phi_x','Z','A','B','A_t','B_t', ...
     'disturbance_level');
+xlabel('x',Interpreter='latex');
+ylabel('y',Interpreter='latex');
 
+figure(2);
+plot(unstacked_z(1,1:end),unstacked_z(2,1:end), "g", "DisplayName","Nominal Trajectory",'LineWidth',3);
+xlabel('x',Interpreter='latex');
+ylabel('y',Interpreter='latex');
+xline(b_poly(1),":",'LineWidth',2);
+xlim([-10,10]);ylim([-10,10]);
 % %%
 % % Compute the maximum error tube
 % constraints = []; % Empty the constraints to perform a new optimization

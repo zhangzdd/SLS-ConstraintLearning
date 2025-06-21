@@ -77,7 +77,7 @@ norm(learned_phi_x - val_phi_x, 'fro')
 norm(learned_phi_u - val_phi_u, 'fro')
 
 
-%% Solve for the nominal trajectory
+%% Solve for the nominal trajectory, problem is formulated into a linear program
 
 % z_norm = sdpvar(T*state_dim,1);
 % v_norm = sdpvar(T*input_dim,1);
@@ -152,10 +152,10 @@ for dim = 1:DimAffine
 
 
         constraints = [constraints, replace(dyn_residual,z,unstacked_z(:)) == 0];
-        % constraints = [constraints, A_poly(dim,:)*z_k(1:constrained_states_upper_limited) + norm(A_poly(dim,:)*phi_kx(1:constrained_states_upper_limited,:),1) <= b_poly(dim)];
         robust_affine_constraints = 0;
         for j = 1:k
-            robust_affine_constraints = robust_affine_constraints + disturbance_level * norm(A_poly(dim,:)*phi_kx(:,(j-1)*state_dim+1:j*state_dim),1);
+            robust_affine_constraints = robust_affine_constraints + ...
+                disturbance_level * norm(A_poly(dim,:)*phi_kx(:,(j-1)*state_dim+1:j*state_dim),1);
         end
         % constraints = [constraints, A_poly(dim,:)*z_k + robust_affine_constraints <= b_poly(dim)];
         affine_residual{k} = A_poly(dim,:)*z_k + robust_affine_constraints - b_poly(dim);
@@ -170,7 +170,7 @@ for dim = 1:DimAffine
         constraints = [constraints, sum(constraint_tight(k,:))<=1];
         
         % Stationarity contribution
-        grad_affine{k} = jacobian(affine_residual{k},z);
+        grad_affine{k} = jacobian(affine_residual{k},[z;v]);
 
         % constraints = [constraints, [1 0]*v_k + norm([1 0]*phi_ku,1) <= 75];
         % constraints = [constraints, [1 0]*v_k - norm([1 0]*phi_ku,1) >= -75];
@@ -200,7 +200,8 @@ lambda_init = sdpvar(1,4);
 for dim = 1:DimAffine
     robust_affine_constraints = 0;
     for j = 1:T
-        robust_affine_constraints = robust_affine_constraints + disturbance_level * norm(A_poly(dim,:)*learned_phi_x((T-1)*state_dim+1:T*state_dim,(j-1)*state_dim+1:j*state_dim),1);
+        robust_affine_constraints = robust_affine_constraints + disturbance_level * ...
+            norm(A_poly(dim,:)*learned_phi_x((T-1)*state_dim+1:T*state_dim,(j-1)*state_dim+1:j*state_dim),1);
     end
     affine_residual{T} = A_poly(dim,:)*z_terminal + robust_affine_constraints - b_poly(dim);
 
@@ -211,7 +212,7 @@ for dim = 1:DimAffine
     constraints = [constraints, replace(affine_residual{T},z,unstacked_z(:)) >= -M*constraint_tight(T,1)];
     constraints = [constraints, 0 <= lambda_affine(T), lambda_affine(T) <= M*constraint_tight(T,2)];
     constraints = [constraints, sum(constraint_tight(T,:))<=1];
-    grad_affine{T} = jacobian(affine_residual{T},z);
+    grad_affine{T} = jacobian(affine_residual{T},[z;v]);
 
 end
 
@@ -229,18 +230,41 @@ for k = 1:T-1
     objective = objective + sum((z_k_plus_1(1:2) - z_k(1:2)).^2) - z_k(1);
 end
 
-grad_obj = jacobian(objective, z);
+grad_obj = jacobian(objective, [z;v]);
+
+% dynamics jacobians
+bicycle_dyn_f = @(x) [x(1),x(2),x(3),x(4)]';
+DT = 0.1;
+bicycle_dyn_g = @(x,u) [0 0 1 0;0 0 0 1; 0 0 0 0; 0 0 0 0]*x + [0 0;0 0;1 0;0 1]*u;
+
+
+traj = unstacked_z;
+u_traj = unstacked_v;
+traj_var_sym = sym('traj_var', size(traj));
+u_traj_var_sym = sym('u_traj_var', size(u_traj));
+
+nu_var_dyn_term = []; % the collection of constraints residual
+for i = 1:size(traj, 2)-1
+nu_var_dyn_term = [nu_var_dyn_term, traj_var_sym(:, i+1) - ( traj_var_sym(:, i) + ...
+  bicycle_dyn_g(traj_var_sym(:,i),u_traj_var_sym(:, i))*DT)];
+end
+nu_var_dyn_jac = jacobian(nu_var_dyn_term(:), [traj_var_sym(:); u_traj_var_sym(:)]);
+dyn_jacobians = double(subs(nu_var_dyn_jac, [traj_var_sym(:); u_traj_var_sym(:)], [traj(:); u_traj(:)]));
 
 
 % Collect the stationarity terms
 stationarity = 0;
 for t = 1:T
     stationarity = stationarity + grad_affine{t} * lambda_affine(t); 
-    if t<=T-1
-        stationarity = stationarity + lambda_dyn(t,:) * grad_dyn{t} ;
-    end
 end
-stationarity = stationarity + grad_obj + lambda_term * grad_term + lambda_init * grad_init;
+nu_var_dyn = sdpvar(1, size(dyn_jacobians, 1)); %nx * T-1
+nu_dyn = nu_var_dyn * dyn_jacobians;
+stationarity = stationarity + nu_dyn;
+nu_var1 = sdpvar(1, 2*size(traj,1) );
+nu_term1 = [nu_var1(1:size(traj, 1) ), zeros(1, length(traj(:)) - 2*size(traj, 1)), ...
+nu_var1(size(traj, 1)+1:end ), zeros(1, length(u_traj(:)))];
+nu_term = nu_term1;
+stationarity = stationarity + grad_obj + nu_term;
 
 % Plug in the solved nominal trajectory
 % numerical_stationarity = replace(stationarity, z, z_norm(:));
@@ -254,5 +278,3 @@ constraints = [constraints, slack >= 0];
 
 ops = sdpsettings('solver','gurobi','verbose', 2);
 optimization_results = optimize(constraints, norm(numerical_stationarity,1), ops);
-
-
