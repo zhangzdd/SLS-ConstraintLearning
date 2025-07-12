@@ -6,7 +6,7 @@ state_dim = 4;
 input_dim = 2;
 output_dim = 2;
 disturbance_level_dyn = 0; % The magnitude of disturbances in dynamics
-disturbance_level_output = 1; % The magnitude of disturbances in sensor
+disturbance_level_output = 0; % The magnitude of disturbances in sensor
 
 % Double integrator dynamics
 A_t = [0 0 1 0;0 0 0 1; 0 0 0 0; 0 0 0 0]*Ts+ eye(state_dim);
@@ -41,7 +41,7 @@ end
 matrices_C = cell(1, num_repetitions_C);
 for i = 1:num_repetitions_C+1
     if i == T
-        matrices_C{i} = C_t + 0;
+        matrices_C{i} = zeros(size(C_t));
     else
         matrices_C{i} = C_t;
     end
@@ -132,13 +132,13 @@ for dim = 1:DimAffine
         robust_affine_constraints = 0;
         for j = 1:k
             robust_affine_constraints = robust_affine_constraints +  ...
-                disturbance_level_dyn * norm(phi_kxw(:,(j-1)*state_dim+1:j*state_dim),1) + ...
-                disturbance_level_output * norm(phi_kxe(:,(j-1)*output_dim+1:j*output_dim),1);
+                disturbance_level_dyn * norm(A_poly(dim,:) * phi_kxw(:,(j-1)*state_dim+1:j*state_dim),1) + ...
+                disturbance_level_output * norm(A_poly(dim,:) *  phi_kxe(:,(j-1)*output_dim+1:j*output_dim),1);
         end
         
         % Assume constraints are only on output (i.e. what the agent senses)
-        constraints = [constraints, z_k(1) + robust_affine_constraints(1) <= b_poly(dim)];
-        constraint_value{k} = z_k + robust_affine_constraints - b_poly(dim);
+        constraints = [constraints, A_poly(dim,:) * z_k + robust_affine_constraints <= b_poly(dim)];
+        constraint_value{k} = A_poly(dim,:) * z_k + robust_affine_constraints - b_poly(dim);
         robust_terms{k} = robust_affine_constraints;
         % constraints = [constraints, [1 0]*v_k + norm([1 0]*phi_ku,1) <= 75];
         % constraints = [constraints, [1 0]*v_k - norm([1 0]*phi_ku,1) >= -75];
@@ -162,10 +162,10 @@ for dim = 1:DimAffine
     robust_affine_constraints = 0;
     for j = 1:T
         robust_affine_constraints = robust_affine_constraints +  ...
-            disturbance_level_dyn *  norm(phi_xw((T-1)*state_dim+1:T*state_dim,(j-1)*state_dim+1:j*state_dim),1) + ...
-            disturbance_level_output *  norm(phi_xe((T-1)*state_dim+1:T*state_dim,(j-1)*output_dim+1:j*output_dim),1);
+            disturbance_level_dyn *  norm(A_poly(dim,:) * phi_xw((T-1)*state_dim+1:T*state_dim,(j-1)*state_dim+1:j*state_dim),1) + ...
+            disturbance_level_output *  norm(A_poly(dim,:) * phi_xe((T-1)*state_dim+1:T*state_dim,(j-1)*output_dim+1:j*output_dim),1);
     end
-    constraints = [constraints, z_terminal(1) + robust_affine_constraints(1) <= b_poly(dim)];
+    constraints = [constraints, A_poly(dim,:) * z_terminal + robust_affine_constraints <= b_poly(dim)];
 end
 
 
@@ -277,51 +277,4 @@ plot(unstacked_z(1,1:end),unstacked_z(2,1:end), "g", "DisplayName","Nominal Traj
 xlabel('x',Interpreter='latex');
 ylabel('y',Interpreter='latex');
 xline(b_poly(1),":",'LineWidth',2);
-xlim([-20,20]);ylim([-20,20]);
-
-function D = createBlockDownshiftOperator(n_block, N)
-% CREATEBLOCKDOWNSHIFTOPERATOR Creates a block downshift operator matrix.
-%
-%   D = CREATEBLOCKDOWNSHIFTOPERATOR(n_block, N) generates a matrix D that,
-%   when multiplied by a stacked vector X of N blocks (each of size n_block),
-%   shifts the blocks downwards. The operation is:
-%   X_shifted = D * X
-%   where X_shifted will have the first block replaced by zeros, and the
-%   subsequent blocks shifted up, with a zero block at the end.
-%
-%   Inputs:
-%     n_block - The dimension (size) of each individual block vector.
-%     N       - The total number of blocks in the stacked vector.
-%
-%   Output:
-%     D       - The (N*n_block) x (N*n_block) block downshift operator matrix.
-
-    % Total dimension of the stacked vector
-    total_dim = N * n_block;
-
-    % Initialize the matrix D with zeros. Using sparse matrix for efficiency
-    % if N*n_block is large, as most elements will be zero.
-    D = sparse(total_dim, total_dim);
-
-    % Populate the matrix.
-    % The i-th block of the output vector (X_shifted) should be the (i+1)-th
-    % block of the input vector (X).
-    % This means we are mapping rows corresponding to block i in D to columns
-    % corresponding to block i+1 in the input.
-
-    for i = 1:(N - 1)
-        % Define the row indices for the current output block (i-th block of X_shifted)
-        row_start = i * n_block + 1;
-        row_end = (i + 1) * n_block;
-
-        % Define the column indices for the corresponding input block ((i+1)-th block of X)
-        col_start = (i - 1) * n_block + 1;
-        col_end = i * n_block;
-
-        % Place an identity matrix in the appropriate block position
-        D(row_start:row_end, col_start:col_end) = eye(n_block);
-    end
-
-    % For the last block of the output (N-th block of X_shifted), it will be
-    % filled with zeros by default from the sparse initialization.
-end
+xlim([-10,10]);ylim([-10,10]);
