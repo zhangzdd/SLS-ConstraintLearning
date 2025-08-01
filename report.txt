@@ -1,0 +1,11 @@
+7.17
+Several things done from Monday meeting
+1. Adding regularization helped improved the optimization problem landscape, but is not the life saver
+    1.1 Regularization on state response norm (phi) will introduce additional structure into the inverse game which is not always explainable
+    1.2 Regularization via imposing input robust bounds can also greatly improve the roll-out quality, but the tube size is wrong 
+        (error signals exceeding bounds)
+2. All code migrated to python with cvxpy to facilitate comparison against Shuyu's code
+3. Several possible culprits ruled out:
+    3.1 Is Yalmip acting wierd? No, because the python implementation gave the same awful roll-outs
+    3.2 Is it because the nature of the problem is weird (the optimizer will try to squeeze tube size in order to get closer to the wall)?
+        No, I took Shuyu's code and implemented the same problem I am solving, and it worked, providing non-zero tube size
