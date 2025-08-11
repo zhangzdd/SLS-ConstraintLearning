@@ -7,13 +7,13 @@ load("z_nominal_val.mat");
 M = 1;
 N = 4;       % state dimension
 Nu = 2;      % control dimension
-T = 10;
+T = 15;
 dimAffine = 4;
 
 U_MAX = 2;
 L_MAX = 100;
-M_big = 1e5;
-epsilon = 1e-4;
+M_big = 1e4;
+epsilon = 1e-5;
 
 state_dim = 4;
 input_dim = 2;
@@ -103,10 +103,10 @@ for m = 1:M
         stationarity = stationarity + lambda_u{m}(2,i) * replace(g_u_2_grad,u_traj_var{m},u_traj_mat{m});
         stationarity = stationarity + lambda_u{m}(3,i) * replace(g_u_3_grad,u_traj_var{m},u_traj_mat{m});
         stationarity = stationarity + lambda_u{m}(4,i) * replace(g_u_4_grad,u_traj_var{m},u_traj_mat{m});
-        constraints = [constraints, -epsilon <= replace(g_u_1,u_traj_var{m},u_traj_mat{m}) * lambda_u{m}(1,i) <= epsilon, lambda_u{m}(1,i) >= 0];
-        constraints = [constraints, -epsilon <= replace(g_u_2,u_traj_var{m},u_traj_mat{m}) * lambda_u{m}(2,i) <= epsilon, lambda_u{m}(2,i) >= 0];
-        constraints = [constraints, -epsilon <= replace(g_u_3,u_traj_var{m},u_traj_mat{m}) * lambda_u{m}(3,i) <= epsilon, lambda_u{m}(3,i) >= 0];
-        constraints = [constraints, -epsilon <= replace(g_u_4,u_traj_var{m},u_traj_mat{m}) * lambda_u{m}(4,i) <= epsilon, lambda_u{m}(4,i) >= 0];
+        constraints = [constraints, (-epsilon <= replace(g_u_1,u_traj_var{m},u_traj_mat{m}) * lambda_u{m}(1,i)) & (replace(g_u_1,u_traj_var{m},u_traj_mat{m}) * lambda_u{m}(1,i)<= epsilon), lambda_u{m}(1,i) >= 0];
+        constraints = [constraints, (-epsilon <= replace(g_u_2,u_traj_var{m},u_traj_mat{m}) * lambda_u{m}(2,i)) & (replace(g_u_2,u_traj_var{m},u_traj_mat{m}) * lambda_u{m}(2,i)<= epsilon), lambda_u{m}(2,i) >= 0];
+        constraints = [constraints, (-epsilon <= replace(g_u_3,u_traj_var{m},u_traj_mat{m}) * lambda_u{m}(3,i)) & (replace(g_u_3,u_traj_var{m},u_traj_mat{m}) * lambda_u{m}(3,i)<= epsilon), lambda_u{m}(3,i) >= 0];
+        constraints = [constraints, (-epsilon <= replace(g_u_4,u_traj_var{m},u_traj_mat{m}) * lambda_u{m}(4,i)) & (replace(g_u_4,u_traj_var{m},u_traj_mat{m}) * lambda_u{m}(4,i)<= epsilon), lambda_u{m}(4,i) >= 0];
     end
 end
 
@@ -234,7 +234,7 @@ end
 % constraints = [constraints, xu>=xl, yu>=yl];
 constraints = [constraints, xu>=0, yu>=0, xl>=0, yl>=0];
 % Sanity check
-% constraints = [constraints, xu==3,yu==1,xl==3,yl==1];
+% constraints = [constraints, xu==3.4,yu==1,xl==3.4,yl == 1];
 %% Final stationarity condition
 stationarity = stationarity + nu_term_con + nu_dyn_con;
 for m = 1:M
