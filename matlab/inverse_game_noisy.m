@@ -11,9 +11,12 @@
 inverse_run = 20;
 
 transmission_noise_level = {0.001,0.005,0.01,0.05,0.1,0.5};
-theta_error = cell(length{transmission_noise_level}, inverse_run);
+theta_error = cell(length(transmission_noise_level), inverse_run);
+K_error = cell(length(transmission_noise_level), inverse_run);
+Phi_x_error = cell(length(transmission_noise_level), inverse_run);
+Phi_u_error = cell(length(transmission_noise_level), inverse_run);
 
-for noise_id = 1:length{transmission_noise_level}
+for noise_id = 1:length(transmission_noise_level)
     for run_id = 1:inverse_run
     
         X = zeros(state_dim*T,num_rollout-1);
@@ -43,6 +46,8 @@ for noise_id = 1:length{transmission_noise_level}
         K = U * pinv(X);
         % Compare against the ground truth
         is_close = norm(K - phi_u / phi_x, 'fro') < 1e-5
+        K_error{noise_id,run_id} = norm(K - phi_u / phi_x, 'fro');
+
         %% Roll out with learned K
         % figure(3); hold on;
         % for rollout_cnt = 1:num_rollout
@@ -90,8 +95,8 @@ for noise_id = 1:length{transmission_noise_level}
         learned_phi_x = learned_phi(1:T*state_dim,:);
         learned_phi_u = learned_phi(T*state_dim+1:end,:);
         % Compare learned phi to ground truth
-        norm(learned_phi_x - phi_x, 'fro') 
-        norm(learned_phi_u - phi_u, 'fro')
+        Phi_x_error{noise_id, run_id} = norm(learned_phi_x - phi_x, 'fro') 
+        Phi_u_error{noise_id, run_id} = norm(learned_phi_u - phi_u, 'fro')
         
         
         %% Solve for the nominal trajectory, problem is formulated into a linear program
@@ -304,7 +309,7 @@ for noise_id = 1:length{transmission_noise_level}
 
         % Save at checkpoints
         if rem(run_id,5) == 0
-            save(sprintf("noisy_inversion_%d_%02d.mat",noise_id,run_id),"theta_error","transmission_noise_level");
+            save(sprintf("data/noisy_inversion_%d_%02d.mat",noise_id,run_id),"theta_error","transmission_noise_level");
         end
     end
 end
