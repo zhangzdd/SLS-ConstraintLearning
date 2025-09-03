@@ -2,46 +2,10 @@
 clear; clc;close all;
 yalmip('clear');
 
-% System dynamics
-% Double integrator dynamics
-Ts = 1;
-A = [0 0 1 0;0 0 0 1; 0 0 0 0; 0 0 0 0]*Ts;
-% B_t = [1/2*Ts^2 0;0 1/2*Ts^2;Ts 0;0 Ts]; 
-% Omit the second order terms
-B = [0 0;0 0;1 0;0 1]*Ts;
-n = size(A, 1);
-
-% Decision variables
-W = sdpvar(n, n, 'symmetric');  % W = M^{-1}
-rho = sdpvar(1);                % scalar multiplier
-lambda = 0.5;                   % contraction rate
-
-% LMI condition (from Finsler-transformed CCM inequality)
-LMI = A*W + W*A' - rho*(B*B') + 2*lambda*W;
-
-% Constraints
-constraints = [W >= 1e-2*eye(n), rho >= 0.2, LMI <= -1e-4*eye(n)];
-% constraints = [W <= 1e-2*eye(n), rho <= 1e-3];
-% Solve
-options = sdpsettings('solver', 'sdpt3', 'verbose', 0);
-sol = optimize(constraints, [], options);
-
-% Check and display
-if sol.problem == 0
-    Wsol = value(W);
-    rhosol = value(rho);
-    M = inv(Wsol);
-
-    % Compute feedback gain
-    K = -(1/2*rhosol) * B' * M;  % 1×2 gain
-    disp('Feasible CCM found:');
-    disp('W ='); disp(Wsol);
-    disp('M = inv(W) ='); disp(inv(Wsol));
-    disp('K = ');disp(K);
-else
-    disp('No feasible solution found.');
-    disp(sol.info);
-end
+% We direct give the state feedback PD controller
+kp = -0.05;
+kd = -0.05;
+K = [kp*eye(2),kd*eye(2)];
 
 %% Calculate the Phi matrices from K
 T = 20; % Time horizon

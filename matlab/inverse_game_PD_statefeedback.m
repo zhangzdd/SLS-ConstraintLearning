@@ -153,8 +153,8 @@ numerical_stationarity = replace(stationarity, z, unstacked_z(:));
 constraints = [constraints, slack >= 0];
 
 % Sanity checks
-% constraints = [constraints, b_poly >= 3]; % This should give non-zero stationarity
-constraints = [constraints, b_poly >= 5.01]; % This should set the problem to be infeasible
+constraints = [constraints, b_poly <= 4.99]; % This should give non-zero stationarity
+% constraints = [constraints, b_poly >= 5.01]; % This should set the problem to be infeasible
 
 ops = sdpsettings('solver','gurobi','verbose', 2);
 optimization_results = optimize(constraints, norm(numerical_stationarity,1), ops);
