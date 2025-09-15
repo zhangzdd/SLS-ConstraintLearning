@@ -1,7 +1,7 @@
 % Load the forward game data
 clf;clear;
 load("forward_game_data.mat");
-num_rollout = 5;
+num_rollout = 20;
 
 %% Write the KKT conditions for robust-constraints-learning
 
@@ -175,3 +175,63 @@ numerical_stationarity = replace(stationarity, t_all, t_all_numerical);
 
 ops = sdpsettings('solver','gurobi','verbose', 2);
 optimization_results = optimize(constraints, norm(numerical_stationarity,1), ops);
+
+
+%%
+% Plot nominal trajectory (z)
+figure;hold on;
+% unstacked_z = reshape(value(z),[state_dim, T]);
+% unstacked_v = reshape(value(v),[input_dim, T]);
+% plot(unstacked_z(1,:),unstacked_z(2,:),"g","DisplayName","Nominal");
+% plot(unstacked_z(1,:) + value(tube_size),unstacked_z(2,:),'Color','m','DisplayName','Tube Bound',LineWidth=3)
+
+xlim([-10,10]);ylim([-10,10]);
+%% Run roll outs at multiple times with noise signal
+
+for rollout_cnt = 1:num_rollout
+    % Roll out trajectory with noise to the dynamics, WITHOUT the feedback
+    x_init = [0;0;0;0]; % same as nominal trajectory initial state
+    x = state_trajectory_closedloop{rollout_cnt};
+    plot(x(1,1:end),x(2,1:end),"b","DisplayName","Disturbed w/ Feedback Control");
+    % plot(x(1,1:end) - unstacked_z(1,1:end),x(2,1:end) - unstacked_z(2,1:end),"b","DisplayName","Error signal w/ Feedback Control")
+end
+% xline(b_poly,":",'LineWidth',2);
+save('forward_game_data.mat','state_trajectory_closedloop','input_trajectory_closedloop','unstacked_z','unstacked_v','state_dim','input_dim','DimAffine','T','num_rollout','val_phi_u','val_phi_x','Z','A','B','A_t','B_t', ...
+    'disturbance_level');
+xlabel('x',Interpreter='latex');
+ylabel('y',Interpreter='latex');
+
+hNom = plot(unstacked_z(1,1:end),unstacked_z(2,1:end), "g", "DisplayName","Nominal Trajectory",'LineWidth',3);
+lineLearn = xline(value(b_poly),"--",'LineWidth',2,'Color','k','DisplayName','Learned Constraint(s)');
+lineTruth = xline(5,'LineWidth',2,'Color','y','DisplayName','Ground Truth Constraint(s)');
+hOpen = plot(nan, nan, 'r', 'DisplayName','Open-loop (disturbed)');
+hFB   = plot(nan, nan, 'b', 'DisplayName','Feedback (disturbed)');
+hStart = plot(unstacked_z(1,1), unstacked_z(2,1), 'o', 'LineStyle','none', ...
+    'MarkerSize',8, 'MarkerFaceColor','g', 'MarkerEdgeColor','k', ...
+    'DisplayName','Start');
+
+hGoal  = plot(unstacked_z(1,end), unstacked_z(2,end), 'p', 'LineStyle','none', ...
+    'MarkerSize',11, 'MarkerFaceColor','g', 'MarkerEdgeColor','k', ...
+    'DisplayName','Goal');
+
+% legend([hNom hOpen hFB lineLearn lineTruth], 'Interpreter','latex', 'Location','best');
+legend([hNom hFB lineLearn lineTruth], 'Interpreter','latex', 'Location','best');
+
+
+%% 
+% 1) Axes cosmetics & LaTeX
+ax = gca; box on; grid on; ax.Layer = 'top';
+ax.TickDir = 'out'; ax.LineWidth = 1;
+ax.FontName = 'Times New Roman'; ax.FontSize = 10;  % or your journal’s font
+set(ax,'TickLabelInterpreter','latex');
+axis equal;xlim([-10,20]);ylim([-2,20]);
+
+
+% 2) Shade the forbidden half-space (to the right of the constraint line)
+yl = ylim; xr = xlim;
+hForbid = patch([value(b_poly) xr(2) xr(2) value(b_poly)], [yl(1) yl(1) yl(2) yl(2)], ...
+    [0 0 0], 'FaceAlpha',0.06, 'EdgeColor','none', 'HandleVisibility','off');
+uistack(hForbid,'bottom');  % keep it behind the trajectories
+text(value(b_poly) + 4, mean(yl), '\textbf{unsafe}', 'Interpreter','latex', ...
+     'Rotation',45, 'HorizontalAlignment','left', 'Color',[0 0 0],'FontSize',30);
+

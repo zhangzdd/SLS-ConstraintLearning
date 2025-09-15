@@ -25,7 +25,7 @@ end
 % This is supposed to a lower triangular matrix
 K = U * pinv(X);
 % Compare against the ground truth
-is_close = norm(K - val_phi_u / val_phi_x, 'fro') < 1e-5;
+is_close = norm(K - val_phi_u / val_phi_x, 'fro') < 1e-5
 %% Roll out with learned K
 % figure(3); hold on;
 % for rollout_cnt = 1:num_rollout

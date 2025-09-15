@@ -319,7 +319,7 @@ DimAffine = 1;
 
 
 constrained_states_upper_limited = 4;
-tube_size = cell(T,1);
+tube_size = opti.variable(1,T);
 for dim = 1:DimAffine
     for k = 1:T-1
         phi_kx = phi_x((k-1)*state_dim+1:k*state_dim,:);
@@ -345,7 +345,7 @@ for dim = 1:DimAffine
         end
         
         opti.subject_to(A_poly(dim,:)*z_k + robust_affine_constraints <= b_poly(dim));
-        tube_size{k} = robust_affine_constraints;
+        opti.subject_to(tube_size(k) == robust_affine_constraints);
         % constraints = [constraints, [1 0]*v_k + norm([1 0]*phi_ku,1) <= 75];
         % constraints = [constraints, [1 0]*v_k - norm([1 0]*phi_ku,1) >= -75];
         % constraints = [constraints, [0 1]*v_k + norm([0 1]*phi_ku,1) <= 75];
@@ -375,6 +375,7 @@ for dim = 1:DimAffine
         
         robust_affine_constraints = robust_affine_constraints + disturbance_level * sum2(t);
     end
+    opti.subject_to(tube_size(T) == robust_affine_constraints);
     opti.subject_to(A_poly(dim,:)*z_terminal + robust_affine_constraints <= b_poly(dim));
 end
 
@@ -442,7 +443,7 @@ for rollout_cnt = 1:num_rollout
         new_x = x(:,i) + f(x(:,i)) + B_t*unstacked_v(:,i) + noise;
         x(:,i+1) = new_x;
     end
-    plot(x(1,:),x(2,:),"r","DisplayName","Disturbed");
+    % plot(x(1,:),x(2,:),"r","DisplayName","Disturbed");
     % plot(x(1,1:end) - unstacked_z(1,1:end),x(2,1:end) - unstacked_z(2,1:end),"r","DisplayName","Error signal without Feedback Control")
     error_signal_openloop{rollout_cnt} = [x(1,1:end) - unstacked_z(1,1:end);x(2,1:end) - unstacked_z(2,1:end)];
     
@@ -476,16 +477,55 @@ end
 xline(b_poly(1),":",'LineWidth',2);
 % save('forward_game_data.mat','state_trajectory_closedloop','input_trajectory_closedloop','unstacked_z','unstacked_v','state_dim','input_dim','DimAffine','T','num_rollout','val_phi_u','val_phi_x','Z','A','B','A_t','B_t', ...
 %     'disturbance_level');
+
 xlabel('x',Interpreter='latex');
 ylabel('y',Interpreter='latex');
 
-figure(2);
-plot(unstacked_z(1,1:end),unstacked_z(2,1:end), "g", "DisplayName","Nominal Trajectory",'LineWidth',3);
-xlabel('x',Interpreter='latex');
-ylabel('y',Interpreter='latex');
-xline(b_poly(1),":",'LineWidth',2);
-xlim([-10,10]);ylim([-10,10]);
+hNom = plot(unstacked_z(1,1:end),unstacked_z(2,1:end), "g", "DisplayName","Nominal Trajectory",'LineWidth',3);
+lineLearn = xline(b_poly(1),"--",'LineWidth',2,'Color','k','DisplayName','Learned Constraint(s)');
+lineTruth = xline(b_poly(1),'LineWidth',2,'Color','y','DisplayName','Ground Truth Constraint(s)');
+hOpen = plot(nan, nan, 'r', 'DisplayName','Open-loop (disturbed)');
+hFB   = plot(nan, nan, 'b', 'DisplayName','Feedback (disturbed)');
+hStart = plot(unstacked_z(1,1), unstacked_z(2,1), 'o', 'LineStyle','none', ...
+    'MarkerSize',8, 'MarkerFaceColor','g', 'MarkerEdgeColor','k', ...
+    'DisplayName','Start');
+
+hGoal  = plot(unstacked_z(1,end), unstacked_z(2,end), 'p', 'LineStyle','none', ...
+    'MarkerSize',11, 'MarkerFaceColor','g', 'MarkerEdgeColor','k', ...
+    'DisplayName','Goal');
+
+legend([hNom hFB lineLearn lineTruth], 'Interpreter','latex', 'Location','best');
 
 
+
+%% 
+% 1) Axes cosmetics & LaTeX
+ax = gca; box on; grid on; ax.Layer = 'top';
+ax.TickDir = 'out'; ax.LineWidth = 1;
+ax.FontName = 'Times New Roman'; ax.FontSize = 10;  % or your journal’s font
+set(ax,'TickLabelInterpreter','latex');
+axis equal;xlim([-5,15]);ylim([0,16]);
+
+
+% 2) Shade the forbidden half-space (to the right of the constraint line)
+yl = ylim; xr = xlim;
+hForbid = patch([b_poly(1) xr(2) xr(2) b_poly(1)], [yl(1) yl(1) yl(2) yl(2)], ...
+    [0 0 0], 'FaceAlpha',0.06, 'EdgeColor','none', 'HandleVisibility','off');
+uistack(hForbid,'bottom');  % keep it behind the trajectories
+text(b_poly(1)+4, mean(yl), '\textbf{unsafe}', 'Interpreter','latex', ...
+     'Rotation',45, 'HorizontalAlignment','left', 'Color',[0 0 0],'FontSize',30);
+
+%% Plot tubes seperately
+figure(2);hold on
+h_TB = plot(linspace(1,T,T),sol.value(tube_size) + unstacked_z(1,:),'Color','#D95319','DisplayName','Tube Bound');
+h_cstrt = yline(b_poly(1),":",'LineWidth',2,'DisplayName','Constraint');
+xlabel('Timestep','Interpreter','latex')
+ylabel('x coordinate value','Interpreter','latex')
+for rollout_cnt = 1:num_rollout
+    plot(linspace(1,T,T),state_trajectory_closedloop{rollout_cnt}(1,:),'Color','b','DisplayName','x value in demonstration trajectories');
+end
+x_FB = plot(nan, nan,'Color','b','DisplayName','x component in demonstration trajectories');
+legend([x_FB h_TB h_cstrt],'Interpreter','latex', 'Location','best')
+xlim([1,T]);
 
 

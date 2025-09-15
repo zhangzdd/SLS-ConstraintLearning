@@ -1,0 +1,388 @@
+% Improved 4D nonholonomic car CCM with systematic debugging
+clear; clc; yalmip('clear'); close all;
+
+
+k_y   = 8;      % lateral (y) position feedback to steering
+k_phi = 8;      % heading feedback to steering
+k_x   = 0.5;      % longitudinal (x) position feedback to accel
+k_v   = 0.5;      % speed feedback to accel
+
+K   = [  0   0  -k_phi   0 ;
+         0   0  0   -k_v ];
+%% Formulate the forward optimization with LTV system premise
+import casadi.*
+opti = casadi.Opti();
+
+T = 20; % Time horizon
+Ts = 0.02; % Sampling time
+state_dim = 4;
+input_dim = 2;
+disturbance_level = 0.05; % The magnitude of disturbances
+% mu = 
+% True dynamics x_dot = f(x) + g(x)*u
+f = @(x) Ts*[x(4)*cos(x(3)),x(4)*sin(x(3)),0,0]';
+
+
+% 4D car dynamics (linearized about (phi_nom, v_nom), then Euler discretized)
+% x = [x; y; phi; v],  u = [u_phi; u_v]
+% Linearized dubins car dynamics, state dependent
+
+% Nominal trajectory z,v
+z = opti.variable(state_dim*T,1);
+v = opti.variable(input_dim*T,1);
+
+A_c = @(phi_nom,v_nom) [ 0  0  -v_nom*sin(phi_nom)   cos(phi_nom) ;
+        0  0   v_nom*cos(phi_nom)   sin(phi_nom) ;
+        0  0    0                   0 ;
+        0  0    0                   0 ];
+B_c = [ 0  0 ;
+        0  0 ;
+        1  0 ;
+        0  1 ];
+
+B_t = Ts*B_c;
+
+
+% Populate the block matrices with desicion variables
+num_repetitions_A = T - 1;
+num_repetitions_B = T - 1;
+num_repetitions_K = T - 1;
+matrices_A = cell(1, num_repetitions_A);
+for i = 1:num_repetitions_A+1
+    if i == T
+        matrices_A{i} = zeros(state_dim);
+    else
+        matrices_A{i} = A_c(z((i-1)*state_dim+3),z((i-1)*state_dim+4))*Ts+eye(state_dim);
+    end
+end
+matrices_B = cell(1, num_repetitions_B);
+for i = 1:num_repetitions_B+1
+    if i == T
+        matrices_B{i} = zeros(size(B_t));
+    else
+        matrices_B{i} = B_t;
+    end
+end
+matrices_K = cell(1, num_repetitions_K);
+for i = 1:num_repetitions_K+1
+    if i == T
+        matrices_K{i} = zeros(size(K));
+    else
+        matrices_K{i} = K;
+    end
+end
+A = blkdiag(matrices_A{:});
+B = blkdiag(matrices_B{:});
+K = blkdiag(matrices_K{:});
+
+Z = createBlockDownshiftOperator(state_dim,T);
+
+%% Calculate the Phi matrices from K (this translates to constraints on phi matrices in the nonlinear case)
+
+% Construct the phi block matrices
+phi_x = opti.variable(T*state_dim, T*state_dim,'full');
+phi_u = opti.variable(T*input_dim, T*state_dim,'full');
+
+constraints = [];
+
+% Populate the phi_x and phi_u as blcok lower triangular matrices
+for i = 1:T
+    for j = 1:T
+        if j>i
+            % opti.subject_to(phi_x((i-1)*state_dim+1:i*state_dim,(j-1)*state_dim+1:j*state_dim) == zeros(state_dim,state_dim));
+            % opti.subject_to(phi_u((i-1)*input_dim+1:i*input_dim,(j-1)*state_dim+1:j*state_dim) == zeros(input_dim,state_dim));
+            % phi_x((i-1)*state_dim+1:i*state_dim,(j-1)*state_dim+1:j*state_dim) = zeros(state_dim,state_dim);
+            phi_u((i-1)*input_dim+1:i*input_dim,(j-1)*state_dim+1:j*state_dim) = zeros(input_dim,state_dim);
+        end
+    end
+end
+
+
+C = [eye(T*state_dim) - Z*A, -Z*B;
+            K              , -eye(input_dim*T)];
+
+opti.subject_to(C*[phi_x;phi_u] == [eye(state_dim*T);zeros(input_dim*T,state_dim*T)]);
+
+% Try SLS without K
+% opti.subject_to([eye(T*state_dim) - Z*A, -Z*B]*[phi_x;phi_u] == eye(state_dim*T));
+% learned_phi = pinv(C)*[eye(state_dim*T);zeros(input_dim*T,state_dim*T)];
+% phi_x = learned_phi(1:T*state_dim,:);
+% phi_u = learned_phi(T*state_dim+1:end,:);
+% 
+% disp("nomr phi_x");disp(norm(phi_x,'fro'));
+% disp("nomr phi_u");disp(norm(phi_u,'fro'));
+% disp("norm K");disp(norm(K,'fro'));
+
+
+%% Populate some placeholder nominal trajectory
+% Tube affine constraint in the MPSF paper
+A_poly = [1 0 0 0;
+         -1 0 0 0;
+         0 1 0 0;
+         0 -1 0 0];
+b_poly = [5;
+        5;
+        2;  
+        2];
+DimAffine = 1;
+
+
+constrained_states_upper_limited = 4;
+tube_size = cell(T,1);
+for dim = 1:DimAffine
+    for k = 1:T-1
+        phi_kx = phi_x((k-1)*state_dim+1:k*state_dim,:);
+        phi_ku = phi_u((k-1)*input_dim+1:k*input_dim,:);
+        z_k = z((k-1)*state_dim+1:k*state_dim);
+        v_k = v((k-1)*input_dim+1:k*input_dim);
+        z_k_plus_1 = z(k*state_dim+1:(k+1)*state_dim);
+        opti.subject_to(z_k_plus_1 == z_k + Ts * [ z_k(4)*cos(z_k(3));
+                                           z_k(4)*sin(z_k(3));
+                                           v_k(1);
+                                           v_k(2) ]);       
+        % constraints = [constraints, A_poly(dim,:)*z_k(1:constrained_states_upper_limited) + norm(A_poly(dim,:)*phi_kx(1:constrained_states_upper_limited,:),1) <= b_poly(dim)];
+        robust_affine_constraints = 0;
+        for j = 1:k
+            % robust_affine_constraints = robust_affine_constraints + disturbance_level * norm(A_poly(dim,:)*phi_kx(:,(j-1)*state_dim+1:j*state_dim),1);
+            rj = A_poly(dim,:) * phi_kx(:, (j-1)*state_dim+1:j*state_dim); % row → vector
+            t = opti.variable(1,length(rj));  % auxiliary nonnegative variables
+            
+            opti.subject_to(t >=  rj);
+            opti.subject_to(t >= -rj);
+            
+            robust_affine_constraints = robust_affine_constraints + disturbance_level * sum2(t);
+        end
+        
+        opti.subject_to(A_poly(dim,:)*z_k + robust_affine_constraints <= b_poly(dim));
+        tube_size{k} = robust_affine_constraints;
+        % constraints = [constraints, [1 0]*v_k + norm([1 0]*phi_ku,1) <= 75];
+        % constraints = [constraints, [1 0]*v_k - norm([1 0]*phi_ku,1) >= -75];
+        % constraints = [constraints, [0 1]*v_k + norm([0 1]*phi_ku,1) <= 75];
+        % constraints = [constraints, [0 1]*v_k - norm([0 1]*phi_ku,1) >= -75];
+    end
+end
+
+% Start and terminal constraint
+z_init = z((1-1)*state_dim+1:1*state_dim);
+z_terminal = z((T-1)*state_dim+1:T*state_dim);
+% v_terminal = v((T-1)*input_dim+1:T*input_dim);
+opti.subject_to(z_init(1:state_dim) == [0;0;0;0]);
+opti.subject_to(z_terminal(1:state_dim) == [0;10;0;0]);
+% opti.subject_to(z_terminal(state_dim) == 0);
+% constraints = [constraints, v_terminal(1:input_dim) == [0;0]];
+
+
+% Terminal robust constraint
+for dim = 1:DimAffine
+    robust_affine_constraints = 0;
+    for j = 1:T
+        % robust_affine_constraints = robust_affine_constraints + disturbance_level * norm(A_poly(dim,:)*phi_x((T-1)*state_dim+1:T*state_dim,(j-1)*state_dim+1:j*state_dim),1);
+        rj = A_poly(dim,:) * phi_kx(:, (j-1)*state_dim+1:j*state_dim); % row → vector
+        t = opti.variable(1,length(rj));  % auxiliary nonnegative variables
+        
+        opti.subject_to(t >=  rj);
+        opti.subject_to(t >= -rj);
+        
+        robust_affine_constraints = robust_affine_constraints + disturbance_level * sum2(t);
+    end
+    opti.subject_to(A_poly(dim,:)*z_terminal + robust_affine_constraints <= b_poly(dim));
+end
+
+
+% SLS constraints
+% % constraints = [constraints, [eye(T*state_dim) - Z*A, -Z*B]*[phi_x;phi_u] == eye(T*state_dim)];
+
+
+% Objective
+objective = 0;
+for k = 1:T-1
+    z_k = z((k-1)*state_dim+1:k*state_dim);
+    z_k_plus_1 = z(k*state_dim+1:(k+1)*state_dim);
+    
+    % The objective is two-fold: trying to maximize x-coordinates, and
+    % trying to smooth the overall trajectory
+    objective = objective + sum((z_k_plus_1(1:2) - z_k(1:2)).^2) - z_k(1);
+end
+
+% Explicit constraints on input level
+% opti.subject_to(v <= 10);
+% opti.subject_to(v >= -10);
+% opti.subject_to(v(:,end) == 0);
+
+% Penalize the phi_u
+% objective = objective + norm(phi_u, 'fro');
+
+
+
+% Solve
+opts = struct;
+opts.expand = true;
+% opts.print_time = false;
+
+% opts.ipopt.print_level = 0;
+opts.ipopt.sb = 'yes';
+% opts.ipopt.max_iter = 300;
+% opts.ipopt.max_cpu_time = 2.0;
+
+opts.ipopt.acceptable_iter = 1;
+opts.ipopt.acceptable_tol = 1e-3;
+opts.ipopt.acceptable_constr_viol_tol = 1e-3;
+opts.ipopt.acceptable_dual_inf_tol = 1e-3;
+opts.ipopt.acceptable_compl_inf_tol = 1e-3;
+opts.ipopt.acceptable_obj_change_tol = 1e-3;
+
+opts.ipopt.hessian_approximation = 'limited-memory';
+
+opti.solver('ipopt', opts);
+
+opti.minimize(objective);
+sol = opti.solve();
+
+%%
+% Plot nominal trajectory (z)
+figure;hold on;
+unstacked_z = reshape(sol.value(z),[state_dim, T]);
+unstacked_v = reshape(sol.value(v),[input_dim, T]);
+plot(unstacked_z(1,:),unstacked_z(2,:),"g","DisplayName","Nominal");
+xlim([-10,10]);ylim([-10,10]);
+
+%% Roll out the trajectory with feedback matrix K
+
+num_rollout = 100;
+error_signal_feedback = cell(num_rollout,1);
+error_signal_openloop = cell(num_rollout,1);
+state_trajectory_closedloop = cell(num_rollout,1);
+input_trajectory_closedloop = cell(num_rollout,1);
+
+f = @(x) Ts*[x(4)*cos(x(3)),x(4)*sin(x(3)),0,0]';
+
+
+
+
+
+for rollout_cnt = 1:num_rollout
+    % Roll out trajectory with noise to the dynamics, WITHOUT the feedback
+    x_init = [0;0;0;0]; % same as nominal trajectory initial state
+    x = zeros(state_dim,T);
+    
+    for i = 1:T-1
+        % noise = randn(4, 1);     % random vector from N(0,1)
+        noise = disturbance_level * (rand(4,1)*2 - 1);
+        new_x = x(:,i) + f(x(:,i)) + B_t*unstacked_v(:,i) + noise;
+        x(:,i+1) = new_x;
+    end
+    plot(x(1,:),x(2,:),"r","DisplayName","Disturbed");
+    % plot(x(1,1:end) - unstacked_z(1,1:end),x(2,1:end) - unstacked_z(2,1:end),"r","DisplayName","Error signal without Feedback Control")
+    error_signal_openloop{rollout_cnt} = [x(1,1:end) - unstacked_z(1,1:end);x(2,1:end) - unstacked_z(2,1:end)];
+    
+    % Roll out trajectory with noise to the dynamics, WITH the feedback
+    
+    x_init = disturbance_level * (rand(4,1)*2 - 1);
+    x = zeros(state_dim,T);
+    x(:,1) = x_init;
+    feedback_u = zeros(input_dim,T);
+    
+    for i = 1:T
+        feedback_control = zeros(input_dim,1);
+        for j = 1:i
+            % Feedback gain exists for all previous timesteps (causal system)
+            feedback_control = feedback_control + K((i-1)*input_dim+1:i*input_dim,(j-1)*state_dim+1:j*state_dim)*(x(:,j) - unstacked_z(:,j));
+        end
+        % noise = randn(4, 1);     % random vector from N(0,1)
+        % noise = noise / norm(noise,1);     % normalize to have norm 1
+        noise = disturbance_level * (rand(4,1)*2 - 1);
+        if i<=T-1
+            x(:,i+1) = x(:,i) + f(x(:,i)) + B_t*(feedback_control + unstacked_v(:,i)) + noise;
+        end
+        feedback_u(:,i) = feedback_control;
+    end
+    plot(x(1,1:end),x(2,1:end),"b","DisplayName","Disturbed w/ Feedback Control");
+    % plot(x(1,1:end) - unstacked_z(1,1:end),x(2,1:end) - unstacked_z(2,1:end),"b","DisplayName","Error signal w/ Feedback Control")
+    error_signal_feedback{rollout_cnt} = [x(1,1:end) - unstacked_z(1,1:end);x(2,1:end) - unstacked_z(2,1:end)];
+    state_trajectory_closedloop{rollout_cnt} = x;
+    input_trajectory_closedloop{rollout_cnt} = feedback_u;
+end
+% xline(b_poly(1),":",'LineWidth',2);
+% save('forward_game_data.mat','state_trajectory_closedloop','input_trajectory_closedloop','unstacked_z','unstacked_v','state_dim','input_dim','DimAffine','T','num_rollout','val_phi_u','val_phi_x','Z','A','B','A_t','B_t', ...
+%     'disturbance_level');
+xlabel('x',Interpreter='latex');
+ylabel('y',Interpreter='latex');
+
+figure(2);
+xlabel('x',Interpreter='latex');
+ylabel('y',Interpreter='latex');
+
+hNom = plot(unstacked_z(1,1:end),unstacked_z(2,1:end), "g", "DisplayName","Nominal Trajectory",'LineWidth',3);
+
+lineLearn = xline(b_poly(1),"--",'LineWidth',2,'Color','k','DisplayName','Learned Constraint(s)');
+lineTruth = xline(b_poly(1),'LineWidth',2,'Color','y','DisplayName','Grond Truth Constraint(s)');
+hOpen = plot(nan, nan, 'r', 'DisplayName','Open-loop (disturbed)');
+hFB   = plot(nan, nan, 'b', 'DisplayName','Feedback (disturbed)');
+hStart = plot(unstacked_z(1,1), unstacked_z(2,1), 'o', 'LineStyle','none', ...
+    'MarkerSize',8, 'MarkerFaceColor','g', 'MarkerEdgeColor','k', ...
+    'DisplayName','Start');
+
+hGoal  = plot(unstacked_z(1,end), unstacked_z(2,end), 'p', 'LineStyle','none', ...
+    'MarkerSize',11, 'MarkerFaceColor','g', 'MarkerEdgeColor','k', ...
+    'DisplayName','Goal');
+
+legend([hNom hOpen hFB lineLearn lineTruth], 'Interpreter','latex', 'Location','best');
+
+xlim([-10,10]);ylim([-20,20]);
+
+%% --- Publication polish: add-ons (no changes to your existing code)
+
+% 0) Lock current legend so new items don’t get added automatically
+hL = legend; set(hL,'AutoUpdate','off');
+
+% 1) Axes cosmetics & LaTeX
+ax = gca; box on; grid on; ax.Layer = 'top';
+ax.TickDir = 'out'; ax.LineWidth = 1;
+ax.FontName = 'Times New Roman'; ax.FontSize = 10;  % or your journal’s font
+set(ax,'TickLabelInterpreter','latex');
+axis equal; xlim([-10,10]); ylim([-20,20]);
+
+% 2) Shade the forbidden half-space (to the right of the constraint line)
+yl = ylim; xr = ax.XLim(2);
+hForbid = patch([b_poly(1) xr xr b_poly(1)], [yl(1) yl(1) yl(2) yl(2)], ...
+    [0 0 0], 'FaceAlpha',0.06, 'EdgeColor','none', 'HandleVisibility','off');
+uistack(hForbid,'bottom');  % keep it behind the trajectories
+text(b_poly(1)+0.15, mean(yl), '\textbf{unsafe}', 'Interpreter','latex', ...
+     'Rotation',90, 'HorizontalAlignment','left', 'Color',[0 0 0]);
+
+
+% 4) Thin the rollout lines (post-hoc, without touching your loop)
+set(findobj(ax,'Type','line','Color',[1 0 0]),'LineWidth',0.5,'HandleVisibility','off'); % red
+set(findobj(ax,'Type','line','Color',[0 0 1]),'LineWidth',0.5,'HandleVisibility','off'); % blue
+
+% 5) Terminal dispersion: overlay 2σ ellipses for endpoints (open vs feedback)
+%    (uses your stored cells: error_signal_openloop, state_trajectory_closedloop)
+try
+    % open-loop terminal xy from your error signals + nominal terminal
+    term_ol = cell2mat(cellfun(@(E) E(:,end), error_signal_openloop, 'UniformOutput', false)) ...
+              + unstacked_z(1:2,end);
+    % feedback terminal xy directly from stored states
+    term_fb = cell2mat(cellfun(@(X) X(1:2,end), state_trajectory_closedloop, 'UniformOutput', false));
+
+    % plot 2σ ellipses
+    plot_cov_ellipse(mean(term_ol,2), cov(term_ol'), 2, 'r--','LineWidth',1.5, 'HandleVisibility','off');
+    plot_cov_ellipse(mean(term_fb,2), cov(term_fb'), 2, 'b--','LineWidth',1.5, 'HandleVisibility','off');
+
+    % mark mean points
+    plot(mean(term_ol(1,:)), mean(term_ol(2,:)), 'rs', 'MarkerFaceColor','r', ...
+         'MarkerSize',5, 'HandleVisibility','off');
+    plot(mean(term_fb(1,:)), mean(term_fb(2,:)), 'bd', 'MarkerFaceColor','b', ...
+         'MarkerSize',5, 'HandleVisibility','off');
+catch
+    % silently skip if arrays aren’t available
+end
+
+
+% 7) Final touches: legend box & export
+legend boxoff;   % cleaner legend
+% export as vector PDF (journal-friendly)
+exportgraphics(gcf,'figure_rollouts.pdf','ContentType','vector');
+
+
+
+

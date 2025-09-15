@@ -12,7 +12,7 @@ T = 20; % Time horizon
 Ts = 1; % Sampling time
 state_dim = 4;
 input_dim = 2;
-disturbance_level = 0.05; % The magnitude of disturbances
+disturbance_level = 0.07; % The magnitude of disturbances
 
 % Double integrator dynamics
 A_t = [0 0 1 0;0 0 0 1; 0 0 0 0; 0 0 0 0]*Ts+ eye(state_dim);
@@ -87,6 +87,7 @@ constraints = [];
 
 
 constrained_states_upper_limited = 4;
+tube_size = sdpvar(1,T);
 for dim = 1:DimAffine
     for k = 1:T-1
         phi_kx = phi_x((k-1)*state_dim+1:k*state_dim,:);
@@ -100,6 +101,7 @@ for dim = 1:DimAffine
         for j = 1:k
             robust_affine_constraints = robust_affine_constraints + disturbance_level * norm(A_poly(dim,:)*phi_kx(:,(j-1)*state_dim+1:j*state_dim),1);
         end
+        tube_size(k) = robust_affine_constraints;
         constraints = [constraints, A_poly(dim,:)*z_k + robust_affine_constraints <= b_poly(dim)];
         % constraints = [constraints, [1 0]*v_k + norm([1 0]*phi_ku,1) <= 75];
         % constraints = [constraints, [1 0]*v_k - norm([1 0]*phi_ku,1) >= -75];
@@ -113,7 +115,7 @@ z_init = z((1-1)*state_dim+1:1*state_dim);
 z_terminal = z((T-1)*state_dim+1:T*state_dim);
 % v_terminal = v((T-1)*input_dim+1:T*input_dim);
 constraints = [constraints, z_init(1:state_dim) == [0;0;0;0]];
-constraints = [constraints, z_terminal(1:state_dim) == [0.;20;0;0]];
+constraints = [constraints, z_terminal(1:state_dim) == [0.;10;0;0]];
 % constraints = [constraints, v_terminal(1:input_dim) == [0;0]];
 
 
@@ -123,6 +125,7 @@ for dim = 1:DimAffine
     for j = 1:T
         robust_affine_constraints = robust_affine_constraints + disturbance_level * norm(A_poly(dim,:)*phi_x((T-1)*state_dim+1:T*state_dim,(j-1)*state_dim+1:j*state_dim),1);
     end
+    tube_size(T) = robust_affine_constraints;
     constraints = [constraints, A_poly(dim,:)*z_terminal + robust_affine_constraints <= b_poly(dim)];
 end
 
@@ -173,7 +176,7 @@ for rollout_cnt = 1:num_rollout
         new_x = A_t*x(:,i) + B_t*unstacked_v(:,i) + noise;
         x(:,i+1) = new_x;
     end
-    plot(x(1,:),x(2,:),"r","DisplayName","Disturbed");
+    % plot(x(1,:),x(2,:),"r","DisplayName","Disturbed");
     % plot(x(1,1:end) - unstacked_z(1,1:end),x(2,1:end) - unstacked_z(2,1:end),"r","DisplayName","Error signal without Feedback Control")
     error_signal_openloop{rollout_cnt} = [x(1,1:end) - unstacked_z(1,1:end);x(2,1:end) - unstacked_z(2,1:end)];
     
@@ -210,13 +213,52 @@ xline(b_poly(1),":",'LineWidth',2);
 xlabel('x',Interpreter='latex');
 ylabel('y',Interpreter='latex');
 
-figure(2);
-plot(unstacked_z(1,1:end),unstacked_z(2,1:end), "g", "DisplayName","Nominal Trajectory",'LineWidth',3);
-xlabel('x',Interpreter='latex');
-ylabel('y',Interpreter='latex');
-xline(b_poly(1),":",'LineWidth',2);
-xlim([-10,10]);ylim([-10,10]);
+
+hNom = plot(unstacked_z(1,1:end),unstacked_z(2,1:end), "g", "DisplayName","Nominal Trajectory",'LineWidth',3);
+lineLearn = xline(b_poly(1),"--",'LineWidth',2,'Color','k','DisplayName','Learned Constraint(s)');
+lineTruth = xline(b_poly(1),'LineWidth',2,'Color','y','DisplayName','Grond Truth Constraint(s)');
+hOpen = plot(nan, nan, 'r', 'DisplayName','Open-loop (disturbed)');
+hFB   = plot(nan, nan, 'b', 'DisplayName','Feedback (disturbed)');
+hStart = plot(unstacked_z(1,1), unstacked_z(2,1), 'o', 'LineStyle','none', ...
+    'MarkerSize',8, 'MarkerFaceColor','g', 'MarkerEdgeColor','k', ...
+    'DisplayName','Start');
+
+hGoal  = plot(unstacked_z(1,end), unstacked_z(2,end), 'p', 'LineStyle','none', ...
+    'MarkerSize',11, 'MarkerFaceColor','g', 'MarkerEdgeColor','k', ...
+    'DisplayName','Goal');
+
+legend([hNom hFB lineLearn lineTruth], 'Interpreter','latex', 'Location','best');
 
 
 
+%% 
+% 1) Axes cosmetics & LaTeX
+ax = gca; box on; grid on; ax.Layer = 'top';
+ax.TickDir = 'out'; ax.LineWidth = 1;
+ax.FontName = 'Times New Roman'; ax.FontSize = 10;  % or your journal’s font
+set(ax,'TickLabelInterpreter','latex');
+axis equal;xlim([-5,15]);ylim([0,16]);
+
+
+% 2) Shade the forbidden half-space (to the right of the constraint line)
+yl = ylim; xr = xlim;
+hForbid = patch([b_poly(1) xr(2) xr(2) b_poly(1)], [yl(1) yl(1) yl(2) yl(2)], ...
+    [0 0 0], 'FaceAlpha',0.06, 'EdgeColor','none', 'HandleVisibility','off');
+uistack(hForbid,'bottom');  % keep it behind the trajectories
+text(b_poly(1)+4, mean(yl), '\textbf{unsafe}', 'Interpreter','latex', ...
+     'Rotation',45, 'HorizontalAlignment','left', 'Color',[0 0 0],'FontSize',30);
+
+
+%% Plot tubes seperately
+figure(2);hold on
+h_TB = plot(linspace(1,T,T),value(tube_size) + unstacked_z(1,:),'Color','#D95319','DisplayName','Tube Bound');
+h_cstrt = yline(b_poly(1),":",'LineWidth',2,'DisplayName','Constraint');
+xlabel('Timestep','Interpreter','latex')
+ylabel('x coordinate value','Interpreter','latex')
+for rollout_cnt = 1:num_rollout
+    plot(linspace(1,T,T),state_trajectory_closedloop{rollout_cnt}(1,:),'Color','b','DisplayName','x value in demonstration trajectories');
+end
+x_FB = plot(nan, nan,'Color','b','DisplayName','x component in demonstration trajectories');
+legend([x_FB h_TB h_cstrt],'Interpreter','latex', 'Location','best')
+xlim([1,T]);
 

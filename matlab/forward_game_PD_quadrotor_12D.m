@@ -1,16 +1,41 @@
 clc;clear;close all;
 
-T = 20; % Time horizon
+T = 10; % Time horizon
 Ts = 0.1; % Sampling time
-state_dim = 4;
-input_dim = 2;
+state_dim = 12;
+input_dim = 4;
 disturbance_level = 1; % The magnitude of disturbances
 
-% Double integrator dynamics
-A_t = [0 0 1 0;0 0 0 1; 0 0 0 0; 0 0 0 0]*Ts+ eye(state_dim);
-% B_t = [1/2*Ts^2 0;0 1/2*Ts^2;Ts 0;0 Ts]; 
-% Omit the second order terms
-B_t = [0 0;0 0;1 0;0 1]*Ts;
+% Parameters
+g  = 9.81;    % gravity [m/s^2]
+m  = 1.0;     % mass [kg]
+Ix = 0.02;    % inertia about x [kg*m^2]
+Iy = 0.02;    % inertia about y [kg*m^2]
+Iz = 0.04;    % inertia about z [kg*m^2]
+
+% State: [x y z phi theta psi vx vy vz p q r]'
+% Input: [tau_x tau_y tau_z T]'
+
+A_t = zeros(12,12);
+A_t(1,7)  = 1;        % xdot = vx
+A_t(2,8)  = 1;        % ydot = vy
+A_t(3,9)  = 1;        % zdot = vz
+A_t(4,10) = 1;        % phidot = p
+A_t(5,11) = 1;        % thetadot = q
+A_t(6,12) = 1;        % psidot = r
+A_t(7,5)  =  g;       % vxdot ≈  g*theta
+A_t(8,4)  = -g;       % vydot ≈ -g*phi
+% remaining entries are zero
+
+B_t = zeros(12,4);
+B_t(10,1) = 1/Ix;     % pdot = tau_x/Ix
+B_t(11,2) = 1/Iy;     % qdot = tau_y/Iy
+B_t(12,3) = 1/Iz;     % rdot = tau_z/Iz
+B_t(9,4)  = 1/m;      % vzdot = T/m - g  (the -g is in A via equilibrium)
+
+
+A_t = eye(12) + Ts*A_t;
+B_t = Ts*B_t;
 
 
 num_repetitions_A = T - 1;
@@ -81,22 +106,20 @@ end
 % plot_region(A_poly,b_poly,vertices);
 
 % Tube affine constraint in the MPSF paper
-A_poly = [1 0 0 0;
-         -1 0 0 0;
-         0 1 0 0;
-         0 -1 0 0];
-b_poly = [5;
-        5;
-        2;  
-        2];
-DimAffine = 1;
+A_poly = [1 0 0 0 0 0 0 0 0 0 0 0 ;
+         0 1 0 0 0 0 0 0 0 0 0 0;
+         0 0 1 0 0 0 0 0 0 0 0 0];
+b_poly = [7;
+        7;
+        55];
+DimAffine = 3;
 
 % Nominal trajectory z,v
 z = sdpvar(state_dim*T,1);
 v = sdpvar(input_dim*T,1);
 
 constrained_states_upper_limited = 4;
-tube_size = sdpvar(1,T);
+tube_size = sdpvar(DimAffine,T);
 for dim = 1:DimAffine
     for k = 1:T-1
         phi_kx = phi_x((k-1)*state_dim+1:k*state_dim,:);
@@ -111,7 +134,7 @@ for dim = 1:DimAffine
             robust_affine_constraints = robust_affine_constraints + disturbance_level * norm(A_poly(dim,:)*phi_kx(:,(j-1)*state_dim+1:j*state_dim),1);
         end
         constraints = [constraints, A_poly(dim,:)*z_k + robust_affine_constraints <= b_poly(dim)];
-        tube_size(k) = robust_affine_constraints;
+        tube_size(dim, k) = robust_affine_constraints;
         % constraints = [constraints, [1 0]*v_k + norm([1 0]*phi_ku,1) <= 75];
         % constraints = [constraints, [1 0]*v_k - norm([1 0]*phi_ku,1) >= -75];
         % constraints = [constraints, [0 1]*v_k + norm([0 1]*phi_ku,1) <= 75];
@@ -123,8 +146,8 @@ end
 z_init = z((1-1)*state_dim+1:1*state_dim);
 z_terminal = z((T-1)*state_dim+1:T*state_dim);
 % v_terminal = v((T-1)*input_dim+1:T*input_dim);
-constraints = [constraints, z_init(1:state_dim) == [0;0;0;0]];
-constraints = [constraints, z_terminal(1:state_dim) == [0.;10;0;0]];
+constraints = [constraints, z_init(1:state_dim) == zeros(12,1)];
+constraints = [constraints, z_terminal(1:3) == [0; 0; 50]];
 % constraints = [constraints, v_terminal(1:input_dim) == [0;0]];
 
 
@@ -135,7 +158,7 @@ for dim = 1:DimAffine
         robust_affine_constraints = robust_affine_constraints + disturbance_level * norm(A_poly(dim,:)*phi_x((T-1)*state_dim+1:T*state_dim,(j-1)*state_dim+1:j*state_dim),1);
     end
     constraints = [constraints, A_poly(dim,:)*z_terminal + robust_affine_constraints <= b_poly(dim)];
-    tube_size(T) = robust_affine_constraints;
+    tube_size(dim,T) = robust_affine_constraints;
 end
 
 
@@ -151,7 +174,7 @@ for k = 1:T-1
     
     % The objective is two-fold: trying to maximize x-coordinates, and
     % trying to smooth the overall trajectory
-    objective = objective + sum((z_k_plus_1(1:2) - z_k(1:2)).^2) - z_k(1);
+    objective = objective + sum((z_k_plus_1(1:3) - z_k(1:3)).^2) - z_k(1) - z_k(2);
 end
 
 % Solve
@@ -175,12 +198,12 @@ input_trajectory_closedloop = cell(num_rollout,1);
 
 for rollout_cnt = 1:num_rollout
     % Roll out trajectory with noise to the dynamics, WITHOUT the feedback
-    x_init = [0;0;0;0]; % same as nominal trajectory initial state
+    x_init = zeros(12,1); % same as nominal trajectory initial state
     x = zeros(state_dim,T);
     
     for i = 1:T-1
         % noise = randn(4, 1);     % random vector from N(0,1)
-        noise = disturbance_level * (rand(4,1)*2 - 1);
+        noise = disturbance_level * (rand(state_dim,1)*2 - 1);
         new_x = A_t*x(:,i) + B_t*unstacked_v(:,i) + noise;
         x(:,i+1) = new_x;
     end
@@ -198,7 +221,7 @@ for rollout_cnt = 1:num_rollout
     
     K = val_phi_u / val_phi_x;
     
-    x_init = disturbance_level * (rand(4,1)*2 - 1);
+    x_init = disturbance_level * (rand(state_dim,1)*2 - 1);
     x = zeros(state_dim,T);
     x(:,1) = x_init;
     feedback_u = zeros(input_dim,T);
@@ -211,7 +234,7 @@ for rollout_cnt = 1:num_rollout
         end
         % noise = randn(4, 1);     % random vector from N(0,1)
         % noise = noise / norm(noise,1);     % normalize to have norm 1
-        noise = disturbance_level * (rand(4,1)*2 - 1);
+        noise = disturbance_level * (rand(state_dim,1)*2 - 1);
         if i<=T-1
             x(:,i+1) = A_t*x(:,i) + B_t*(feedback_control + unstacked_v(:,i)) + noise;
         end
@@ -223,99 +246,130 @@ for rollout_cnt = 1:num_rollout
     state_trajectory_closedloop{rollout_cnt} = x;
     input_trajectory_closedloop{rollout_cnt} = feedback_u;
 end
-xline(b_poly(1),":",'LineWidth',2);
-% save('forward_game_data.mat','state_trajectory_closedloop','input_trajectory_closedloop','unstacked_z','unstacked_v','state_dim','input_dim','DimAffine','T','num_rollout','val_phi_u','val_phi_x','Z','A','B','A_t','B_t', ...
-%     'disturbance_level');
-xlabel('x',Interpreter='latex');
-ylabel('y',Interpreter='latex');
-
-hNom = plot(unstacked_z(1,1:end),unstacked_z(2,1:end), "g", "DisplayName","Nominal Trajectory",'LineWidth',3);
-lineLearn = xline(b_poly(1),"--",'LineWidth',2,'Color','k','DisplayName','Learned Constraint(s)');
-lineTruth = xline(b_poly(1),'LineWidth',2,'Color','y','DisplayName','Ground Truth Constraint(s)');
-hOpen = plot(nan, nan, 'r', 'DisplayName','Open-loop (disturbed)');
-hFB   = plot(nan, nan, 'b', 'DisplayName','Feedback (disturbed)');
-hStart = plot(unstacked_z(1,1), unstacked_z(2,1), 'o', 'LineStyle','none', ...
-    'MarkerSize',8, 'MarkerFaceColor','g', 'MarkerEdgeColor','k', ...
-    'DisplayName','Start');
-
-hGoal  = plot(unstacked_z(1,end), unstacked_z(2,end), 'p', 'LineStyle','none', ...
-    'MarkerSize',11, 'MarkerFaceColor','g', 'MarkerEdgeColor','k', ...
-    'DisplayName','Goal');
-
-% legend([hNom hOpen hFB lineLearn lineTruth], 'Interpreter','latex', 'Location','best');
-legend([hNom hFB lineLearn lineTruth], 'Interpreter','latex', 'Location','best');
 
 
-%% 
-% 1) Axes cosmetics & LaTeX
-ax = gca; box on; grid on; ax.Layer = 'top';
-ax.TickDir = 'out'; ax.LineWidth = 1;
-ax.FontName = 'Times New Roman'; ax.FontSize = 10;  % or your journal’s font
-set(ax,'TickLabelInterpreter','latex');
-axis equal;xlim([-10,20]);ylim([-2,20]);
+%% 3D visualization (replaces the old 2D plotting below the TODO)
 
+% New 3D figure (separate from any earlier figure state)
+figure; hold on;
 
-% 2) Shade the forbidden half-space (to the right of the constraint line)
-yl = ylim; xr = xlim;
-hForbid = patch([b_poly(1) xr(2) xr(2) b_poly(1)], [yl(1) yl(1) yl(2) yl(2)], ...
-    [0 0 0], 'FaceAlpha',0.06, 'EdgeColor','none', 'HandleVisibility','off');
-uistack(hForbid,'bottom');  % keep it behind the trajectories
-text(b_poly(1)+4, mean(yl), '\textbf{unsafe}', 'Interpreter','latex', ...
-     'Rotation',45, 'HorizontalAlignment','left', 'Color',[0 0 0],'FontSize',30);
+% Nominal, start, goal
+hNom = plot3(unstacked_z(1,:), unstacked_z(2,:), unstacked_z(3,:), ...
+    "g", "DisplayName","Nominal Trajectory", 'LineWidth',3);
 
+hStart = plot3(unstacked_z(1,1), unstacked_z(2,1), unstacked_z(3,1), ...
+    'o', 'LineStyle','none', 'MarkerSize',8, ...
+    'MarkerFaceColor','g', 'MarkerEdgeColor','k', 'DisplayName','Start');
 
-%% Plot tubes seperately
-figure(2);hold on
-h_TB = plot(linspace(1,T,T),value(tube_size) + unstacked_z(1,:),'Color','#D95319','DisplayName','Tube Bound');
-h_cstrt = yline(b_poly(1),":",'LineWidth',2,'DisplayName','Constraint');
-xlabel('Timestep','Interpreter','latex')
-ylabel('x coordinate value','Interpreter','latex')
-for rollout_cnt = 1:num_rollout
-    plot(linspace(1,T,T),state_trajectory_closedloop{rollout_cnt}(1,:),'Color','b','DisplayName','x value in demonstration trajectories');
+hGoal  = plot3(unstacked_z(1,end), unstacked_z(2,end), unstacked_z(3,end), ...
+    'p', 'LineStyle','none', 'MarkerSize',11, ...
+    'MarkerFaceColor','g', 'MarkerEdgeColor','k', 'DisplayName','Goal');
+
+% Plot all closed-loop disturbed trajectories (from the stored cell array)
+for rr = 1:num_rollout
+    xrr = state_trajectory_closedloop{rr};
+    if ~isempty(xrr)
+        scatter3(xrr(1,:), xrr(2,:), xrr(3,:), "b", "HandleVisibility","off");
+    end
 end
-x_FB = plot(nan, nan,'Color','b','DisplayName','x component in demonstration trajectories');
-legend([x_FB h_TB h_cstrt],'Interpreter','latex', 'Location','best')
-xlim([1,T]);
-% %%
-% % Compute the maximum error tube
-% constraints = []; % Empty the constraints to perform a new optimization
-% val_phi_x = value(phi_x);
-% w = sdpvar(state_dim*T,1);
-% x_tube = zeros(1,T);
-% y_tube = zeros(1,T);
-% for t = 1:T
-%     x_bound = 0;
-%     y_bound = 0;
-%     for j = 1:t
-%         x_bound = x_bound + norm([1 0 0 0] * val_phi_x((t-1)*state_dim+1:t*state_dim,(j-1)*state_dim+1:j*state_dim) * w((j-1)*state_dim+1:j*state_dim),1);
-%         y_bound = y_bound + norm([0 1 0 0] * val_phi_x((t-1)*state_dim+1:t*state_dim,(j-1)*state_dim+1:j*state_dim) * w((j-1)*state_dim+1:j*state_dim),1);
-%         constraints = [constraints, norm(w((j-1)*state_dim+1:j*state_dim),1) <= 1];
-%     end
-%     % Try to maximize the bounds
-%     optimize(constraints, 10000 - norm(x_bound,1), ops);
-%     x_tube(t) = value(x_bound);
-%     optimize(constraints, 10000 - norm(y_bound,1), ops);
-%     y_tube(t) = value(y_bound);
-% end
-% %% Visualize the tube bound (this section could take a while to run)
-% % Plot the tube along with the various rollout trajectories
-% figure(2);hold on;
-% for t = 1:(T-1)
-%     % Upper bound line from x_tube(t) to x_tube(t+1)
-%     plot([t, t+1], [x_tube(t), x_tube(t+1)], 'k', 'LineWidth', 2);
-% 
-%     % Lower bound line from -x_tube(t) to -x_tube(t+1)
-%     plot([t, t+1], [-x_tube(t), -x_tube(t+1)], 'k', 'LineWidth', 2);
-% end
-% 
-% % Plot rollout trajectories
-% for rollout_cnt = 1:num_rollout
-%     for t = 1:T
-%         x_closed_loop = error_signal_feedback{rollout_cnt}(1,t);
-%         x_open_loop   = error_signal_openloop{rollout_cnt}(2,t);
-%         scatter(t, x_closed_loop, 10, 'blue');
-%         scatter(t, x_open_loop,   10, 'red');
-% 
-%     end
-% end
-% xlabel("t");ylabel("x");
+% Legend placeholder for feedback trajectories
+hFB = plot3(nan, nan, nan, 'b', 'DisplayName','Feedback (disturbed)');
+
+% Axes cosmetics
+grid on; box on; ax = gca; ax.Layer = 'top';
+ax.TickDir = 'out'; ax.LineWidth = 1;
+ax.FontName = 'Times New Roman'; ax.FontSize = 10;
+set(ax,'TickLabelInterpreter','latex');
+
+xlabel('x','Interpreter','latex');
+ylabel('y','Interpreter','latex');
+zlabel('z','Interpreter','latex');
+% axis vis3d; 
+axis equal;
+xlim([-10, 20]); ylim([-10, 20]); zlim([0, 55]);
+view(3);
+
+% --- Constraint planes from A_poly * [x y z ...]^T <= b_poly ---
+% Ensure z range includes z = b_poly(3)
+zl = zlim; 
+zlim([zl(1), max(zl(2), b_poly(3))]);
+
+% Refresh limits after any change
+xl = xlim; yl = ylim; zl = zlim;
+
+% x <= 7  -> plane x = 7
+XX = [b_poly(1) b_poly(1) b_poly(1) b_poly(1)];
+YY = [yl(1)     yl(2)     yl(2)     yl(1)];
+ZZ = [zl(1)     zl(1)     zl(2)     zl(2)];
+lineLearn = patch('XData',XX,'YData',YY,'ZData',ZZ, ...
+    'FaceColor','k','FaceAlpha',0.06,'EdgeColor','k', ...
+    'DisplayName','Learned Constraint(s)');
+
+% y <= 7  -> plane y = 7
+YY = [b_poly(2) b_poly(2) b_poly(2) b_poly(2)];
+XX = [xl(1)     xl(2)     xl(2)     xl(1)];
+ZZ = [zl(1)     zl(1)     zl(2)     zl(2)];
+patch('XData',XX,'YData',YY,'ZData',ZZ, ...
+    'FaceColor','k','FaceAlpha',0.06,'EdgeColor','k', ...
+    'HandleVisibility','off');
+
+% z <= 55 -> plane z = 55
+ZZ = [b_poly(3) b_poly(3) b_poly(3) b_poly(3)];
+XX = [xl(1)     xl(2)     xl(2)     xl(1)];
+YY = [yl(1)     yl(1)     yl(2)     yl(2)];
+patch('XData',XX,'YData',YY,'ZData',ZZ, ...
+    'FaceColor','k','FaceAlpha',0.06,'EdgeColor','k', ...
+    'HandleVisibility','off');
+
+% Legend (no duplicate x-plane)
+legend([hNom hFB lineLearn], 'Interpreter','latex', 'Location','best');
+
+
+
+%% Plot tubes separately (time vs one coordinate, keep as in 2D)
+
+% TODO: now we need to plot boxes using value from tube_size
+
+
+
+
+tube_vals = value(tube_size);  % [DimAffine x T], here DimAffine = 3 for x,y,z
+if ~isempty(tube_vals) && size(tube_vals,1) >= 3
+    % Optionally, decimate to reduce clutter (set to 1 to draw all)
+    STEP = 1;  
+
+    for k = 1:STEP:T
+        c = unstacked_z(1:3, k);              % center: [x;y;z] at time k
+        r = max(tube_vals(1:3, k), 0);        % half-sizes (ensure nonnegative)
+
+        if any(r > 0)
+            % Box corner ranges
+            xr = [c(1)-r(1), c(1)+r(1)];
+            yr = [c(2)-r(2), c(2)+r(2)];
+            zr = [c(3)-r(3), c(3)+r(3)];
+
+            % 8 vertices (using ndgrid to enumerate corners)
+            [Xv, Yv, Zv] = ndgrid(xr, yr, zr);
+            V = [Xv(:), Yv(:), Zv(:)];  % 8x3
+
+            % 6 faces (each as 4 vertex indices)
+            % Order matches the 8 vertices generated by ndgrid:
+            % idx mapping: (x,y,z) -> 1:(-,-,-), 2:(+,-,-), 3:(-,+,-), 4:(+,+,-),
+            %                                 5:(-,-,+), 6:(+,-,+), 7:(-,+,+), 8:(+,+,+)
+            F = [1 3 7 5;   % -X side
+                 2 4 8 6;   % +X side
+                 1 2 4 3;   % -Z side (bottom)
+                 5 6 8 7;   % +Z side (top)
+                 1 2 6 5;   % -Y side
+                 3 4 8 7];  % +Y side
+
+            % Draw as a wireframe box (no fill) to avoid hiding trajectories
+            patch('Vertices', V, 'Faces', F, ...
+                  'FaceColor','none', ...
+                  'EdgeColor',[0 0.4470 0.7410], ...   % MATLAB default blue
+                  'LineWidth', 0.8, ...
+                  'HandleVisibility','off');
+        end
+    end
+end
+

@@ -96,7 +96,6 @@ z = sdpvar(state_dim*T,1);
 v = sdpvar(input_dim*T,1);
 
 constrained_states_upper_limited = 4;
-tube_size = sdpvar(1,T);
 for dim = 1:DimAffine
     for k = 1:T-1
         phi_kx = phi_x((k-1)*state_dim+1:k*state_dim,:);
@@ -111,7 +110,6 @@ for dim = 1:DimAffine
             robust_affine_constraints = robust_affine_constraints + disturbance_level * norm(A_poly(dim,:)*phi_kx(:,(j-1)*state_dim+1:j*state_dim),1);
         end
         constraints = [constraints, A_poly(dim,:)*z_k + robust_affine_constraints <= b_poly(dim)];
-        tube_size(k) = robust_affine_constraints;
         % constraints = [constraints, [1 0]*v_k + norm([1 0]*phi_ku,1) <= 75];
         % constraints = [constraints, [1 0]*v_k - norm([1 0]*phi_ku,1) >= -75];
         % constraints = [constraints, [0 1]*v_k + norm([0 1]*phi_ku,1) <= 75];
@@ -135,7 +133,6 @@ for dim = 1:DimAffine
         robust_affine_constraints = robust_affine_constraints + disturbance_level * norm(A_poly(dim,:)*phi_x((T-1)*state_dim+1:T*state_dim,(j-1)*state_dim+1:j*state_dim),1);
     end
     constraints = [constraints, A_poly(dim,:)*z_terminal + robust_affine_constraints <= b_poly(dim)];
-    tube_size(T) = robust_affine_constraints;
 end
 
 
@@ -163,8 +160,6 @@ figure;hold on;
 unstacked_z = reshape(value(z),[state_dim, T]);
 unstacked_v = reshape(value(v),[input_dim, T]);
 % plot(unstacked_z(1,:),unstacked_z(2,:),"g","DisplayName","Nominal");
-% plot(unstacked_z(1,:) + value(tube_size),unstacked_z(2,:),'Color','m','DisplayName','Tube Bound',LineWidth=3)
-
 xlim([-10,10]);ylim([-10,10]);
 %% Run roll outs at multiple times with noise signal
 num_rollout = 100;
@@ -184,7 +179,7 @@ for rollout_cnt = 1:num_rollout
         new_x = A_t*x(:,i) + B_t*unstacked_v(:,i) + noise;
         x(:,i+1) = new_x;
     end
-    % plot(x(1,:),x(2,:),"r","DisplayName","Disturbed");
+    plot(x(1,:),x(2,:),"r","DisplayName","Disturbed");
     % plot(x(1,1:end) - unstacked_z(1,1:end),x(2,1:end) - unstacked_z(2,1:end),"r","DisplayName","Error signal without Feedback Control")
     error_signal_openloop{rollout_cnt} = [x(1,1:end) - unstacked_z(1,1:end);x(2,1:end) - unstacked_z(2,1:end)];
     
@@ -224,8 +219,8 @@ for rollout_cnt = 1:num_rollout
     input_trajectory_closedloop{rollout_cnt} = feedback_u;
 end
 xline(b_poly(1),":",'LineWidth',2);
-% save('forward_game_data.mat','state_trajectory_closedloop','input_trajectory_closedloop','unstacked_z','unstacked_v','state_dim','input_dim','DimAffine','T','num_rollout','val_phi_u','val_phi_x','Z','A','B','A_t','B_t', ...
-%     'disturbance_level');
+save('forward_game_data.mat','state_trajectory_closedloop','input_trajectory_closedloop','unstacked_z','unstacked_v','state_dim','input_dim','DimAffine','T','num_rollout','val_phi_u','val_phi_x','Z','A','B','A_t','B_t', ...
+    'disturbance_level');
 xlabel('x',Interpreter='latex');
 ylabel('y',Interpreter='latex');
 
@@ -242,8 +237,8 @@ hGoal  = plot(unstacked_z(1,end), unstacked_z(2,end), 'p', 'LineStyle','none', .
     'MarkerSize',11, 'MarkerFaceColor','g', 'MarkerEdgeColor','k', ...
     'DisplayName','Goal');
 
-% legend([hNom hOpen hFB lineLearn lineTruth], 'Interpreter','latex', 'Location','best');
-legend([hNom hFB lineLearn lineTruth], 'Interpreter','latex', 'Location','best');
+legend([hNom hOpen hFB lineLearn lineTruth], 'Interpreter','latex', 'Location','best');
+
 
 
 %% 
@@ -262,20 +257,6 @@ hForbid = patch([b_poly(1) xr(2) xr(2) b_poly(1)], [yl(1) yl(1) yl(2) yl(2)], ..
 uistack(hForbid,'bottom');  % keep it behind the trajectories
 text(b_poly(1)+4, mean(yl), '\textbf{unsafe}', 'Interpreter','latex', ...
      'Rotation',45, 'HorizontalAlignment','left', 'Color',[0 0 0],'FontSize',30);
-
-
-%% Plot tubes seperately
-figure(2);hold on
-h_TB = plot(linspace(1,T,T),value(tube_size) + unstacked_z(1,:),'Color','#D95319','DisplayName','Tube Bound');
-h_cstrt = yline(b_poly(1),":",'LineWidth',2,'DisplayName','Constraint');
-xlabel('Timestep','Interpreter','latex')
-ylabel('x coordinate value','Interpreter','latex')
-for rollout_cnt = 1:num_rollout
-    plot(linspace(1,T,T),state_trajectory_closedloop{rollout_cnt}(1,:),'Color','b','DisplayName','x value in demonstration trajectories');
-end
-x_FB = plot(nan, nan,'Color','b','DisplayName','x component in demonstration trajectories');
-legend([x_FB h_TB h_cstrt],'Interpreter','latex', 'Location','best')
-xlim([1,T]);
 % %%
 % % Compute the maximum error tube
 % constraints = []; % Empty the constraints to perform a new optimization

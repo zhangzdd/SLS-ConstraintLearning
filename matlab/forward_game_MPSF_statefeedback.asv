@@ -224,13 +224,13 @@ for rollout_cnt = 1:num_rollout
     input_trajectory_closedloop{rollout_cnt} = feedback_u;
 end
 xline(b_poly(1),":",'LineWidth',2);
-% save('forward_game_data.mat','state_trajectory_closedloop','input_trajectory_closedloop','unstacked_z','unstacked_v','state_dim','input_dim','DimAffine','T','num_rollout','val_phi_u','val_phi_x','Z','A','B','A_t','B_t', ...
-%     'disturbance_level');
+save('forward_game_data.mat','state_trajectory_closedloop','input_trajectory_closedloop','unstacked_z','unstacked_v','state_dim','input_dim','DimAffine','T','num_rollout','val_phi_u','val_phi_x','Z','A','B','A_t','B_t', ...
+    'disturbance_level');
 xlabel('x',Interpreter='latex');
 ylabel('y',Interpreter='latex');
 
 hNom = plot(unstacked_z(1,1:end),unstacked_z(2,1:end), "g", "DisplayName","Nominal Trajectory",'LineWidth',3);
-lineLearn = xline(b_poly(1),"--",'LineWidth',2,'Color','k','DisplayName','Learned Constraint(s)');
+lineLearn = xline(value(b_poly(1),"--",'LineWidth',2,'Color','k','DisplayName','Learned Constraint(s)');
 lineTruth = xline(b_poly(1),'LineWidth',2,'Color','y','DisplayName','Ground Truth Constraint(s)');
 hOpen = plot(nan, nan, 'r', 'DisplayName','Open-loop (disturbed)');
 hFB   = plot(nan, nan, 'b', 'DisplayName','Feedback (disturbed)');

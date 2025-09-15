@@ -1,10 +1,54 @@
-clc;clear;close all;
+% YALMIP-based Control Contraction Metric (CCM) synthesis
+clear; clc;close all;
+yalmip('clear');
 
+% System dynamics
+% Double integrator dynamics
+Ts = 1;
+A = [0 0 1 0;0 0 0 1; 0 0 0 0; 0 0 0 0]*Ts;
+% B_t = [1/2*Ts^2 0;0 1/2*Ts^2;Ts 0;0 Ts]; 
+% Omit the second order terms
+B = [0 0;0 0;1 0;0 1]*Ts;
+n = size(A, 1);
+
+% Decision variables
+W = sdpvar(n, n, 'symmetric');  % W = M^{-1}
+rho = sdpvar(1);                % scalar multiplier
+lambda = 0.5;                   % contraction rate
+
+% LMI condition (from Finsler-transformed CCM inequality)
+LMI = A*W + W*A' - rho*(B*B') + 2*lambda*W;
+
+% Constraints
+constraints = [W >= 1e-2*eye(n), rho >= 0.2, LMI <= -1e-4*eye(n)];
+% constraints = [W <= 1e-2*eye(n), rho <= 1e-3];
+% Solve
+options = sdpsettings('solver', 'sdpt3', 'verbose', 0);
+sol = optimize(constraints, [], options);
+
+% Check and display
+if sol.problem == 0
+    Wsol = value(W);
+    rhosol = value(rho);
+    M = inv(Wsol);
+
+    % Compute feedback gain
+    K = -(1/2*rhosol) * B' * M;  % 1×2 gain
+    disp('Feasible CCM found:');
+    disp('W ='); disp(Wsol);
+    disp('M = inv(W) ='); disp(inv(Wsol));
+    disp('K = ');disp(K);
+else
+    disp('No feasible solution found.');
+    disp(sol.info);
+end
+
+%% Calculate the Phi matrices from K
 T = 20; % Time horizon
-Ts = 0.1; % Sampling time
+Ts = 1; % Sampling time
 state_dim = 4;
 input_dim = 2;
-disturbance_level = 1; % The magnitude of disturbances
+disturbance_level = 0.05; % The magnitude of disturbances
 
 % Double integrator dynamics
 A_t = [0 0 1 0;0 0 0 1; 0 0 0 0; 0 0 0 0]*Ts+ eye(state_dim);
@@ -15,6 +59,7 @@ B_t = [0 0;0 0;1 0;0 1]*Ts;
 
 num_repetitions_A = T - 1;
 num_repetitions_B = T - 1;
+num_repetitions_K = T - 1;
 matrices_A = cell(1, num_repetitions_A);
 for i = 1:num_repetitions_A+1
     if i == T
@@ -31,55 +76,35 @@ for i = 1:num_repetitions_B+1
         matrices_B{i} = B_t;
     end
 end
+matrices_K = cell(1, num_repetitions_K);
+for i = 1:num_repetitions_K+1
+    if i == T
+        matrices_K{i} = zeros(size(K));
+    else
+        matrices_K{i} = K;
+    end
+end
 A = blkdiag(matrices_A{:});
 B = blkdiag(matrices_B{:});
+K = blkdiag(matrices_K{:});
 
 Z = createBlockDownshiftOperator(state_dim,T);
 
-% Construct the phi block matrices
-phi_x = sdpvar(T*state_dim, T*state_dim,'full');
-phi_u = sdpvar(T*input_dim, T*state_dim,'full');
+%% Calculate the Phi matrices from K
 
-constraints = [];
+C = [eye(T*state_dim) - Z*A, -Z*B;
+            K              , -eye(input_dim*T)];
+Rc = rank(C);
+learned_phi = pinv(C)*[eye(state_dim*T);zeros(input_dim*T,state_dim*T)];
+phi_x = learned_phi(1:T*state_dim,:);
+phi_u = learned_phi(T*state_dim+1:end,:);
 
-% Populate the phi_x and phi_u as blcok lower triangular matrices
-for i = 1:T
-    for j = 1:T
-        if j>i
-            constraints = [constraints,  phi_x((i-1)*state_dim+1:i*state_dim,(j-1)*state_dim+1:j*state_dim) == zeros(state_dim,state_dim)];
-            constraints = [constraints,  phi_u((i-1)*input_dim+1:i*input_dim,(j-1)*state_dim+1:j*state_dim) == zeros(input_dim,state_dim)];
-            % phi_x((i-1)*state_dim+1:i*state_dim,(j-1)*state_dim+1:j*state_dim) = zeros(state_dim,state_dim);
-            % phi_u((i-1)*input_dim+1:i*input_dim,(j-1)*state_dim+1:j*state_dim) = zeros(input_dim,state_dim);
-        end
-    end
-end
+disp("nomr phi_x");disp(norm(phi_x,'fro'));
+disp("nomr phi_u");disp(norm(phi_u,'fro'));
+disp("norm K");disp(norm(K,'fro'));
 
-% % "Tube" region specified with vertices
-% vertices = [
-%     0,  0;
-%     7,  3;
-%     10,   10;
-%     3,  7
-% ];
-% 
-% % The number of affine constraints
-% DimAffine = size(vertices,1);
-% 
-% % Converted to halfspace form: A x <= b
-% n_edges = size(vertices, 1);
-% A_poly = zeros(n_edges, 2);
-% b_poly = zeros(n_edges, 1);
-% for i = 1:n_edges
-%     p1 = vertices(i,:);
-%     p2 = vertices(mod(i,n_edges)+1,:);
-%     edge = p2 - p1;
-%     normal = [edge(2), -edge(1)];  % outward normal (CW)
-%     normal = normal / norm(normal);
-%     A_poly(i,:) = normal;
-%     b_poly(i) = normal * p1';
-% end
-% plot_region(A_poly,b_poly,vertices);
 
+%% Populate some placeholder nominal trajectory
 % Tube affine constraint in the MPSF paper
 A_poly = [1 0 0 0;
          -1 0 0 0;
@@ -94,9 +119,10 @@ DimAffine = 1;
 % Nominal trajectory z,v
 z = sdpvar(state_dim*T,1);
 v = sdpvar(input_dim*T,1);
+constraints = [];
+
 
 constrained_states_upper_limited = 4;
-tube_size = sdpvar(1,T);
 for dim = 1:DimAffine
     for k = 1:T-1
         phi_kx = phi_x((k-1)*state_dim+1:k*state_dim,:);
@@ -111,7 +137,6 @@ for dim = 1:DimAffine
             robust_affine_constraints = robust_affine_constraints + disturbance_level * norm(A_poly(dim,:)*phi_kx(:,(j-1)*state_dim+1:j*state_dim),1);
         end
         constraints = [constraints, A_poly(dim,:)*z_k + robust_affine_constraints <= b_poly(dim)];
-        tube_size(k) = robust_affine_constraints;
         % constraints = [constraints, [1 0]*v_k + norm([1 0]*phi_ku,1) <= 75];
         % constraints = [constraints, [1 0]*v_k - norm([1 0]*phi_ku,1) >= -75];
         % constraints = [constraints, [0 1]*v_k + norm([0 1]*phi_ku,1) <= 75];
@@ -135,12 +160,11 @@ for dim = 1:DimAffine
         robust_affine_constraints = robust_affine_constraints + disturbance_level * norm(A_poly(dim,:)*phi_x((T-1)*state_dim+1:T*state_dim,(j-1)*state_dim+1:j*state_dim),1);
     end
     constraints = [constraints, A_poly(dim,:)*z_terminal + robust_affine_constraints <= b_poly(dim)];
-    tube_size(T) = robust_affine_constraints;
 end
 
 
 % SLS constraints
-constraints = [constraints, [eye(T*state_dim) - Z*A, -Z*B]*[phi_x;phi_u] == eye(T*state_dim)];
+% % constraints = [constraints, [eye(T*state_dim) - Z*A, -Z*B]*[phi_x;phi_u] == eye(T*state_dim)];
 
 
 % Objective
@@ -157,16 +181,17 @@ end
 % Solve
 ops = sdpsettings('solver','gurobi','verbose', 2);
 optimization_results = optimize(constraints, objective, ops);
+
 %%
 % Plot nominal trajectory (z)
 figure;hold on;
 unstacked_z = reshape(value(z),[state_dim, T]);
 unstacked_v = reshape(value(v),[input_dim, T]);
 % plot(unstacked_z(1,:),unstacked_z(2,:),"g","DisplayName","Nominal");
-% plot(unstacked_z(1,:) + value(tube_size),unstacked_z(2,:),'Color','m','DisplayName','Tube Bound',LineWidth=3)
-
 xlim([-10,10]);ylim([-10,10]);
-%% Run roll outs at multiple times with noise signal
+
+%% Roll out the trajectory with feedback matrix K
+
 num_rollout = 100;
 error_signal_feedback = cell(num_rollout,1);
 error_signal_openloop = cell(num_rollout,1);
@@ -184,19 +209,11 @@ for rollout_cnt = 1:num_rollout
         new_x = A_t*x(:,i) + B_t*unstacked_v(:,i) + noise;
         x(:,i+1) = new_x;
     end
-    % plot(x(1,:),x(2,:),"r","DisplayName","Disturbed");
+    plot(x(1,:),x(2,:),"r","DisplayName","Disturbed");
     % plot(x(1,1:end) - unstacked_z(1,1:end),x(2,1:end) - unstacked_z(2,1:end),"r","DisplayName","Error signal without Feedback Control")
     error_signal_openloop{rollout_cnt} = [x(1,1:end) - unstacked_z(1,1:end);x(2,1:end) - unstacked_z(2,1:end)];
     
     % Roll out trajectory with noise to the dynamics, WITH the feedback
-    
-    % Suppress the NaNs
-    val_phi_u = value(phi_u);
-    val_phi_u(isnan(val_phi_u)) = 0;
-    val_phi_x = value(phi_x);
-    
-    
-    K = val_phi_u / val_phi_x;
     
     x_init = disturbance_level * (rand(4,1)*2 - 1);
     x = zeros(state_dim,T);
@@ -229,7 +246,7 @@ xline(b_poly(1),":",'LineWidth',2);
 xlabel('x',Interpreter='latex');
 ylabel('y',Interpreter='latex');
 
-hNom = plot(unstacked_z(1,1:end),unstacked_z(2,1:end), "g", "DisplayName","Nominal Trajectory",'LineWidth',3);
+hNom = plot(unstacked_z(1,1:end),unstacked_z(2,1:end), "g", "DisplayName","Nominal Trajectory",'LineWidth',2);
 lineLearn = xline(b_poly(1),"--",'LineWidth',2,'Color','k','DisplayName','Learned Constraint(s)');
 lineTruth = xline(b_poly(1),'LineWidth',2,'Color','y','DisplayName','Ground Truth Constraint(s)');
 hOpen = plot(nan, nan, 'r', 'DisplayName','Open-loop (disturbed)');
@@ -242,8 +259,8 @@ hGoal  = plot(unstacked_z(1,end), unstacked_z(2,end), 'p', 'LineStyle','none', .
     'MarkerSize',11, 'MarkerFaceColor','g', 'MarkerEdgeColor','k', ...
     'DisplayName','Goal');
 
-% legend([hNom hOpen hFB lineLearn lineTruth], 'Interpreter','latex', 'Location','best');
-legend([hNom hFB lineLearn lineTruth], 'Interpreter','latex', 'Location','best');
+legend([hNom hOpen hFB lineLearn lineTruth], 'Interpreter','latex', 'Location','best');
+
 
 
 %% 
@@ -252,7 +269,7 @@ ax = gca; box on; grid on; ax.Layer = 'top';
 ax.TickDir = 'out'; ax.LineWidth = 1;
 ax.FontName = 'Times New Roman'; ax.FontSize = 10;  % or your journal’s font
 set(ax,'TickLabelInterpreter','latex');
-axis equal;xlim([-10,20]);ylim([-2,20]);
+axis equal;xlim([-5,15]);ylim([0,16]);
 
 
 % 2) Shade the forbidden half-space (to the right of the constraint line)
@@ -264,58 +281,5 @@ text(b_poly(1)+4, mean(yl), '\textbf{unsafe}', 'Interpreter','latex', ...
      'Rotation',45, 'HorizontalAlignment','left', 'Color',[0 0 0],'FontSize',30);
 
 
-%% Plot tubes seperately
-figure(2);hold on
-h_TB = plot(linspace(1,T,T),value(tube_size) + unstacked_z(1,:),'Color','#D95319','DisplayName','Tube Bound');
-h_cstrt = yline(b_poly(1),":",'LineWidth',2,'DisplayName','Constraint');
-xlabel('Timestep','Interpreter','latex')
-ylabel('x coordinate value','Interpreter','latex')
-for rollout_cnt = 1:num_rollout
-    plot(linspace(1,T,T),state_trajectory_closedloop{rollout_cnt}(1,:),'Color','b','DisplayName','x value in demonstration trajectories');
-end
-x_FB = plot(nan, nan,'Color','b','DisplayName','x component in demonstration trajectories');
-legend([x_FB h_TB h_cstrt],'Interpreter','latex', 'Location','best')
-xlim([1,T]);
-% %%
-% % Compute the maximum error tube
-% constraints = []; % Empty the constraints to perform a new optimization
-% val_phi_x = value(phi_x);
-% w = sdpvar(state_dim*T,1);
-% x_tube = zeros(1,T);
-% y_tube = zeros(1,T);
-% for t = 1:T
-%     x_bound = 0;
-%     y_bound = 0;
-%     for j = 1:t
-%         x_bound = x_bound + norm([1 0 0 0] * val_phi_x((t-1)*state_dim+1:t*state_dim,(j-1)*state_dim+1:j*state_dim) * w((j-1)*state_dim+1:j*state_dim),1);
-%         y_bound = y_bound + norm([0 1 0 0] * val_phi_x((t-1)*state_dim+1:t*state_dim,(j-1)*state_dim+1:j*state_dim) * w((j-1)*state_dim+1:j*state_dim),1);
-%         constraints = [constraints, norm(w((j-1)*state_dim+1:j*state_dim),1) <= 1];
-%     end
-%     % Try to maximize the bounds
-%     optimize(constraints, 10000 - norm(x_bound,1), ops);
-%     x_tube(t) = value(x_bound);
-%     optimize(constraints, 10000 - norm(y_bound,1), ops);
-%     y_tube(t) = value(y_bound);
-% end
-% %% Visualize the tube bound (this section could take a while to run)
-% % Plot the tube along with the various rollout trajectories
-% figure(2);hold on;
-% for t = 1:(T-1)
-%     % Upper bound line from x_tube(t) to x_tube(t+1)
-%     plot([t, t+1], [x_tube(t), x_tube(t+1)], 'k', 'LineWidth', 2);
-% 
-%     % Lower bound line from -x_tube(t) to -x_tube(t+1)
-%     plot([t, t+1], [-x_tube(t), -x_tube(t+1)], 'k', 'LineWidth', 2);
-% end
-% 
-% % Plot rollout trajectories
-% for rollout_cnt = 1:num_rollout
-%     for t = 1:T
-%         x_closed_loop = error_signal_feedback{rollout_cnt}(1,t);
-%         x_open_loop   = error_signal_openloop{rollout_cnt}(2,t);
-%         scatter(t, x_closed_loop, 10, 'blue');
-%         scatter(t, x_open_loop,   10, 'red');
-% 
-%     end
-% end
-% xlabel("t");ylabel("x");
+
+
